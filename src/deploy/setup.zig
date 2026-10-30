@@ -1,0 +1,470 @@
+//! Prepares a server for its first deploy, and is safe to run again: it creates
+//! what is missing and changes nothing that exists. Any other proxy, or a Traefik
+//! that would need restarting, stops it with what to do: other apps live there.
+
+const std = @import("std");
+const Config = @import("../config/Config.zig");
+const Remote = @import("../remote/Remote.zig");
+const docker = @import("../docker/commands.zig");
+const traefik = @import("../proxy/traefik.zig");
+const detect = @import("../proxy/detect.zig");
+const Allocator = std.mem.Allocator;
+const Writer = std.Io.Writer;
+
+pub const Options = struct {
+    /// Asks the server everything and changes nothing.
+    dry_run: bool = false,
+};
+
+const IS_ROOT_OR_SUDO = "[ \"$(id -u)\" -eq 0 ] || sudo -n true";
+const HAS_DOCKER = "command -v docker";
+const INSTALL_DOCKER = "(curl -fsSL https://get.docker.com || wget -O - https://get.docker.com) | sh";
+const LISTENING = "ss -ltn 2>/dev/null || netstat -ltn 2>/dev/null";
+const MAKE_FOLDERS =
+    \\mkdir -p "$HOME/.cowshed/blobs" "$HOME/.cowshed/locks" "$HOME/.cowshed/traefik/routes" "$HOME/.cowshed/traefik/acme" && printf %s "$HOME"
+;
+
+const Run = struct {
+    arena: Allocator,
+    remote: Remote,
+    out: *Writer,
+    config: Config,
+    options: Options,
+
+    fn ask(self: Run, argv: []const []const u8) Remote.Error!Remote.Result {
+        return self.remote.run(self.arena, .{ .argv = argv });
+    }
+
+    fn shell(self: Run, text: []const u8) Remote.Error!Remote.Result {
+        return self.ask(&.{ "sh", "-c", text });
+    }
+
+    fn stop(self: Run, comptime format: []const u8, args: anytype) Writer.Error!bool {
+        try self.out.print("stopped: " ++ format ++ "\n", args);
+        return false;
+    }
+
+    fn lastLine(text: []const u8) []const u8 {
+        const trimmed = std.mem.trimEnd(u8, text, "\r\n ");
+        const start = if (std.mem.lastIndexOfScalar(u8, trimmed, '\n')) |i| i + 1 else 0;
+        return trimmed[start..];
+    }
+};
+
+pub const Error = Remote.Error || Writer.Error;
+
+/// False when it stopped; why has been written to `out`.
+pub fn run(arena: Allocator, remote: Remote, out: *Writer, config: Config, options: Options) Error!bool {
+    const self: Run = .{ .arena = arena, .remote = remote, .out = out, .config = config, .options = options };
+    if (options.dry_run) try out.writeAll("dry run: nothing will change\n");
+    if (!try ensureDocker(self)) return false;
+    const home = try ensureFolders(self) orelse return false;
+    if (config.proxy != null and !try ensureProxy(self, home)) return false;
+    try out.writeAll("setup done\n");
+    return true;
+}
+
+fn ensureDocker(self: Run) Error!bool {
+    try self.out.writeAll("docker: checking\n");
+    const found = try self.ask(docker.version);
+    if (found.ok()) {
+        try self.out.print("docker: {s}\n", .{std.mem.trimEnd(u8, found.stdout, "\r\n")});
+        return true;
+    }
+    if ((try self.shell(HAS_DOCKER)).ok()) {
+        return self.stop("Docker is installed and `{s}` cannot use it: {s}. Add the user to the `docker` group, or start Docker", .{ self.config.ssh.user, Run.lastLine(found.stderr) });
+    }
+    if (self.options.dry_run) {
+        try self.out.writeAll("docker: missing, would be installed\n");
+        return true;
+    }
+    if (!(try self.shell(IS_ROOT_OR_SUDO)).ok()) {
+        return self.stop("Docker is missing, and installing it needs root or sudo without a password. Install it: https://docs.docker.com/engine/install/", .{});
+    }
+    try self.out.writeAll("docker: missing, installing with Docker's script\n");
+    const installed = try self.shell(INSTALL_DOCKER);
+    const after = try self.ask(docker.version);
+    if (!after.ok()) {
+        if ((try self.shell(HAS_DOCKER)).ok()) {
+            return self.stop("Docker was installed and `{s}` cannot use it yet: {s}. A new login may be enough after joining the `docker` group", .{ self.config.ssh.user, Run.lastLine(after.stderr) });
+        }
+        return self.stop("installing Docker failed: {s}", .{Run.lastLine(installed.stderr)});
+    }
+    try self.out.print("docker: installed, {s}\n", .{std.mem.trimEnd(u8, after.stdout, "\r\n")});
+    return true;
+}
+
+/// The server's home; in a dry run, how it is named.
+fn ensureFolders(self: Run) Error!?[]const u8 {
+    if (self.options.dry_run) {
+        try self.out.writeAll("folders: ~/.cowshed would be made if missing\n");
+        return "$HOME";
+    }
+    try self.out.writeAll("folders: making ~/.cowshed\n");
+    const made = try self.shell(MAKE_FOLDERS);
+    if (!made.ok()) {
+        _ = try self.stop("could not make ~/.cowshed: {s}", .{Run.lastLine(made.stderr)});
+        return null;
+    }
+    try self.out.writeAll("folders: ~/.cowshed\n");
+    return made.stdout;
+}
+
+fn ensureProxy(self: Run, home: []const u8) Error!bool {
+    try self.out.writeAll("traefik: looking for one on the server\n");
+    switch (try detect.detect(self.arena, self.remote, self.config.proxy.?)) {
+        .stopped => |message| return self.stop("{s}", .{message}),
+        .none => return ensureOwn(self, home),
+        .traefik => |found| {
+            try self.out.print("traefik: using `{s}` ({s}), network {s}, routes {s}", .{ found.name, found.image, found.network, found.routes_dir });
+            if (self.config.proxy.?.ssl) {
+                try self.out.print(", entrypoint {s}, resolver {s}", .{ found.https_entrypoint.?, found.resolver.? });
+            }
+            try self.out.writeByte('\n');
+            if (traefik.isFloating(found.image)) {
+                try self.out.print("notice: `{s}` floats: recreating that container may bring another Traefik version\n", .{found.image});
+            }
+            if (!found.api) {
+                try self.out.writeAll("notice: Traefik's API is off: a switch cannot be confirmed through it\n");
+            }
+            return true;
+        },
+    }
+}
+
+fn ensureOwn(self: Run, home: []const u8) Error!bool {
+    // Ours, stopped: it was made here, and is only started again.
+    const state = try self.ask(try docker.containerState(self.arena, traefik.OWN_NAME));
+    if (state.ok()) {
+        if (self.options.dry_run) {
+            try self.out.print("traefik: `{s}` is stopped, would be started\n", .{traefik.OWN_NAME});
+            return true;
+        }
+        const started = try self.ask(try docker.start(self.arena, traefik.OWN_NAME));
+        if (!started.ok()) return self.stop("could not start `{s}`: {s}", .{ traefik.OWN_NAME, Run.lastLine(started.stderr) });
+        try self.out.print("traefik: started `{s}`\n", .{traefik.OWN_NAME});
+        return true;
+    }
+
+    const proxy = self.config.proxy.?;
+    if (proxy.ssl and proxy.acme_email == null) {
+        return self.stop("there is no Traefik here, and certificates from Let's Encrypt need an email: set `proxy.acme_email`", .{});
+    }
+
+    const listening = try self.shell(LISTENING);
+    if (listening.ok()) {
+        for ([_]u16{ 80, 443 }) |port| {
+            if (traefik.listensOn(listening.stdout, port)) {
+                return self.stop("something other than Traefik listens on port {d} (nginx? Caddy?). Cowshed will not touch it", .{port});
+            }
+        }
+    } else {
+        try self.out.writeAll("notice: could not list the ports in use; starting Traefik will tell\n");
+    }
+
+    if (self.options.dry_run) {
+        try self.out.print("traefik: none here, would start `{s}` ({s}) on 80 and 443, network {s}\n", .{ traefik.OWN_NAME, traefik.OWN_IMAGE, traefik.OWN_NETWORK });
+        return true;
+    }
+
+    if (!(try self.ask(try docker.networkExists(self.arena, traefik.OWN_NETWORK))).ok()) {
+        const created = try self.ask(try docker.networkCreate(self.arena, traefik.OWN_NETWORK));
+        if (!created.ok()) return self.stop("could not create the network: {s}", .{Run.lastLine(created.stderr)});
+    }
+    const routes = try std.fmt.allocPrint(self.arena, "{s}/.cowshed/traefik/routes", .{home});
+    const acme = try std.fmt.allocPrint(self.arena, "{s}/.cowshed/traefik/acme", .{home});
+    try self.out.print("traefik: none here, starting `{s}` ({s}); a first download can take a while\n", .{ traefik.OWN_NAME, traefik.OWN_IMAGE });
+    const ran = try self.ask(try traefik.ownRunCommand(self.arena, routes, acme, proxy.acme_email));
+    if (!ran.ok()) {
+        // A failed `docker run` leaves its container behind, on a port it never got.
+        _ = try self.ask(try docker.remove(self.arena, traefik.OWN_NAME));
+        return self.stop("could not start Traefik: {s}", .{Run.lastLine(ran.stderr)});
+    }
+    try self.out.print("traefik: started `{s}` ({s}) on 80 and 443, network {s}\n", .{ traefik.OWN_NAME, traefik.OWN_IMAGE, traefik.OWN_NETWORK });
+    return true;
+}
+
+const testing = std.testing;
+const Fake = @import("../remote/Fake.zig");
+
+const VPS_INSPECT =
+    \\["/entrypoint.sh"]
+    \\["--api.insecure=true","--entrypoints.web.address=:80","--entrypoints.websecure.address=:443","--providers.docker=true","--providers.file.directory=/etc/traefik","--certificatesresolvers.letsencrypt.acme.email=a@b"]
+    \\network_public 
+    \\
+;
+
+const Harness = struct {
+    arena: std.heap.ArenaAllocator,
+    fake: Fake = undefined,
+    output: Writer.Allocating = undefined,
+
+    fn create() Harness {
+        return .{ .arena = std.heap.ArenaAllocator.init(testing.allocator) };
+    }
+
+    fn start(self: *Harness) void {
+        self.fake = Fake.init(self.arena.allocator());
+        self.output = .init(self.arena.allocator());
+    }
+
+    fn deinit(self: *Harness) void {
+        self.arena.deinit();
+    }
+
+    fn on(self: *Harness, contains: []const u8, exit_code: u8, stdout: []const u8) !void {
+        try self.fake.on(contains, .{ .result = .{ .exit_code = exit_code, .stdout = stdout, .stderr = "the error" } });
+    }
+
+    fn setup(self: *Harness, proxy: ?Config.Proxy, options: Options) !bool {
+        const config: Config = .{ .service = "s", .image = "i", .host = "h", .proxy = proxy };
+        return run(self.arena.allocator(), self.fake.remote(), &self.output.writer, config, options);
+    }
+
+    fn says(self: *Harness, text: []const u8) !void {
+        if (std.mem.indexOf(u8, self.output.written(), text) == null) {
+            std.debug.print("output:\n{s}\n", .{self.output.written()});
+            return error.TestExpectedOutput;
+        }
+    }
+
+    fn changedNothing(self: *Harness) !void {
+        for ([_][]const u8{ "docker run", "network create", "docker start", "docker rm", "mkdir", "get.docker.com" }) |change| {
+            try testing.expect(!self.fake.ran(change));
+        }
+    }
+};
+
+const PROXY: Config.Proxy = .{ .host = "a.example" };
+const SSL_PROXY: Config.Proxy = .{ .host = "a.example", .ssl = true, .acme_email = "me@x" };
+
+fn newServer(h: *Harness) !void {
+    try h.on("docker version", 0, "29.1.3\n");
+    try h.on("docker inspect --format {{.State.Running}}", 1, "");
+    try h.on("network inspect", 1, "");
+    try h.on("ss -ltn", 0, "LISTEN 0 1 0.0.0.0:22 0.0.0.0:*\n");
+    try h.on("mkdir -p", 0, "/home/u");
+}
+
+test "a new server: folders, network and our own Traefik" {
+    var h = Harness.create();
+    defer h.deinit();
+    h.start();
+    try newServer(&h);
+    try testing.expect(try h.setup(SSL_PROXY, .{}));
+    try testing.expect(h.fake.ran("network create cowshed"));
+    try testing.expect(h.fake.ran("docker run -d --name cowshed-traefik"));
+    try testing.expect(h.fake.ran("/home/u/.cowshed/traefik/routes:/etc/traefik/routes"));
+    try testing.expect(h.fake.ran("acme.email=me@x"));
+    try h.says("setup done");
+}
+
+test "a new server, dry run: asks and changes nothing" {
+    var h = Harness.create();
+    defer h.deinit();
+    h.start();
+    try newServer(&h);
+    try testing.expect(try h.setup(SSL_PROXY, .{ .dry_run = true }));
+    try h.changedNothing();
+    try h.says("would start `cowshed-traefik`");
+}
+
+test "an existing Traefik is used and left alone, its settings told" {
+    var h = Harness.create();
+    defer h.deinit();
+    h.start();
+    try h.on("docker version", 0, "29\n");
+    try h.on("mkdir -p", 0, "/home/u");
+    try h.on("docker ps", 0, "abc\ttraefik:latest\ttraefik\nd\tapp:1\tapp\n");
+    try h.on("docker inspect", 0, VPS_INSPECT);
+    try testing.expect(try h.setup(SSL_PROXY, .{}));
+    try h.says("network network_public");
+    try h.says("routes /etc/traefik");
+    try h.says("entrypoint websecure");
+    try h.says("resolver letsencrypt");
+    try h.says("notice: `traefik:latest` floats");
+    try testing.expect(h.fake.ran("docker exec abc sh -c"));
+    try testing.expect(!h.fake.ran("docker run"));
+    try testing.expect(!h.fake.ran("network create"));
+    try testing.expect(!h.fake.ran("docker start"));
+}
+
+fn existingWith(h: *Harness, inspect: []const u8) !void {
+    try h.on("docker version", 0, "29\n");
+    try h.on("mkdir -p", 0, "/home/u");
+    try h.on("docker ps", 0, "abc\ttraefik:3\tt\n");
+    try h.on("docker inspect", 0, inspect);
+}
+
+test "a Traefik that would need a restart stops it, untouched" {
+    const cases = [_]struct { inspect: []const u8, says: []const u8 }{
+        .{ .inspect = "null\n[\"--entrypoints.web.address=:80\"]\nnet \n", .says = "no routes folder" },
+        .{ .inspect = "null\n[\"--entrypoints.web.address=:80\",\"--providers.file.filename=/a.yml\"]\nnet \n", .says = "reads one route file" },
+        .{ .inspect = "null\n[\"--entrypoints.web.address=:80\",\"--providers.file.directory=/r\",\"--providers.file.watch=false\"]\nnet \n", .says = "does not watch" },
+        .{ .inspect = "null\nnull\nnet \n", .says = "set up by a file or its environment" },
+    };
+    for (cases) |case| {
+        var h = Harness.create();
+        defer h.deinit();
+        h.start();
+        try existingWith(&h, case.inspect);
+        try testing.expect(!try h.setup(PROXY, .{}));
+        try h.says(case.says);
+        try testing.expect(!h.fake.ran("docker run"));
+        try testing.expect(!h.fake.ran("docker rm"));
+    }
+}
+
+test "what an existing Traefik lacks for ssl, or from inside" {
+    {
+        var h = Harness.create();
+        defer h.deinit();
+        h.start();
+        try existingWith(&h, "null\n[\"--entrypoints.web.address=:80\",\"--providers.file.directory=/r\"]\nnet \n");
+        try testing.expect(!try h.setup(SSL_PROXY, .{}));
+        try h.says("no entrypoint on 443");
+    }
+    {
+        var h = Harness.create();
+        defer h.deinit();
+        h.start();
+        try existingWith(&h, "null\n[\"--entrypoints.w.address=:443\",\"--providers.file.directory=/r\"]\nnet \n");
+        try testing.expect(!try h.setup(SSL_PROXY, .{}));
+        try h.says("no certificate resolver");
+    }
+    {
+        var h = Harness.create();
+        defer h.deinit();
+        h.start();
+        try existingWith(&h, VPS_INSPECT);
+        try h.on("docker exec", 1, "");
+        try testing.expect(!try h.setup(PROXY, .{}));
+        try h.says("must be a writable folder");
+    }
+}
+
+test "kamal-proxy, two Traefiks, and another program on the ports stop it" {
+    {
+        var h = Harness.create();
+        defer h.deinit();
+        h.start();
+        try newServer(&h);
+        try h.on("docker ps", 0, "a\tbasecamp/kamal-proxy:v0.9\tkamal-proxy\n");
+        try testing.expect(!try h.setup(PROXY, .{}));
+        try h.says("kamal-proxy runs on this server");
+        try testing.expect(!h.fake.ran("docker run"));
+    }
+    {
+        var h = Harness.create();
+        defer h.deinit();
+        h.start();
+        try newServer(&h);
+        try h.on("docker ps", 0, "a\ttraefik:3\tone\nb\ttraefik:3\ttwo\n");
+        try testing.expect(!try h.setup(PROXY, .{}));
+        try h.says("more than one Traefik");
+    }
+    {
+        var h = Harness.create();
+        defer h.deinit();
+        h.start();
+        try newServer(&h);
+        try h.on("ss -ltn", 0, "LISTEN 0 1 0.0.0.0:443 0.0.0.0:*\n");
+        try testing.expect(!try h.setup(PROXY, .{}));
+        try h.says("listens on port 443");
+        try testing.expect(!h.fake.ran("docker run"));
+    }
+}
+
+test "ssl with no email, on a new server, stops before anything starts" {
+    var h = Harness.create();
+    defer h.deinit();
+    h.start();
+    try newServer(&h);
+    try testing.expect(!try h.setup(.{ .host = "a", .ssl = true }, .{}));
+    try h.says("set `proxy.acme_email`");
+    try testing.expect(!h.fake.ran("docker run"));
+}
+
+test "our own Traefik, stopped, is only started again" {
+    var h = Harness.create();
+    defer h.deinit();
+    h.start();
+    try newServer(&h);
+    try h.on("docker inspect --format {{.State.Running}}", 0, "false\n");
+    try testing.expect(try h.setup(PROXY, .{}));
+    try testing.expect(h.fake.ran("docker start cowshed-traefik"));
+    try testing.expect(!h.fake.ran("docker run"));
+}
+
+test "a failed start leaves no container behind" {
+    var h = Harness.create();
+    defer h.deinit();
+    h.start();
+    try newServer(&h);
+    try h.on("docker run", 125, "");
+    try testing.expect(!try h.setup(PROXY, .{}));
+    try h.says("could not start Traefik: the error");
+    try testing.expect(h.fake.ran("docker rm -f cowshed-traefik"));
+}
+
+test "Docker: usable, unusable, missing without root, installed, failing" {
+    {
+        var h = Harness.create();
+        defer h.deinit();
+        h.start();
+        try h.on("docker version", 1, "");
+        try testing.expect(!try h.setup(null, .{}));
+        try h.says("cannot use it");
+        try testing.expect(!h.fake.ran("get.docker.com"));
+    }
+    {
+        var h = Harness.create();
+        defer h.deinit();
+        h.start();
+        try h.on("docker version", 127, "");
+        try h.on("command -v docker", 1, "");
+        try h.on("sudo -n true", 1, "");
+        try testing.expect(!try h.setup(null, .{}));
+        try h.says("needs root or sudo");
+        try testing.expect(!h.fake.ran("get.docker.com"));
+    }
+    {
+        var h = Harness.create();
+        defer h.deinit();
+        h.start();
+        try h.on("docker version", 127, "");
+        try h.on("command -v docker", 1, "");
+        try testing.expect(try h.setup(null, .{ .dry_run = true }));
+        try h.says("would be installed");
+        try h.changedNothing();
+    }
+    {
+        var h = Harness.create();
+        defer h.deinit();
+        h.start();
+        try h.on("docker version", 127, "");
+        try h.on("command -v docker", 1, "");
+        try testing.expect(!try h.setup(null, .{}));
+        try testing.expect(h.fake.ran("get.docker.com"));
+        try h.says("installing Docker failed");
+    }
+}
+
+test "folders that cannot be made stop it" {
+    var h = Harness.create();
+    defer h.deinit();
+    h.start();
+    try h.on("docker version", 0, "29\n");
+    try h.on("mkdir -p", 1, "");
+    try testing.expect(!try h.setup(PROXY, .{}));
+    try h.says("could not make ~/.cowshed: the error");
+}
+
+test "no proxy in the config: no Traefik is touched" {
+    var h = Harness.create();
+    defer h.deinit();
+    h.start();
+    try h.on("docker version", 0, "29\n");
+    try testing.expect(try h.setup(null, .{}));
+    try testing.expect(!h.fake.ran("docker ps"));
+}

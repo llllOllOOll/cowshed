@@ -1,0 +1,7 @@
+.{
+    .name = .cowshed,
+    .version = "0.0.1",
+    .minimum_zig_version = "0.17.0",
+    .paths = .{""},
+    .fingerprint = 0xf879a71faff6ebd2,
+}
