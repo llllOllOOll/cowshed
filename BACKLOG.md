@@ -13,7 +13,8 @@
 - [x] Sending an image: only the blobs the server lacks
 - [x] `lock status`, `lock release`
 - [x] `rollback`, `versions`, `logs`, `exec`, `prune`, `stop`, `remove`, `audit`
-- [ ] First real deploy: Arena
+- [x] First real deploy: Arena, on the VPS (2026-10-30). HTTPS, the redirect and a
+      WebSocket handshake checked from outside; the game itself not played yet
 - [ ] Orbitville; then both `tools/deploy.sh` removed
 
 ## Second version
@@ -24,17 +25,17 @@
 
 ## Open
 
+- [ ] A server that ignores SIGTERM takes `docker stop`'s full 10 s (Arena's did: exit 137)
 - [ ] A large part being sent shows no progress of its own
 - [ ] Installing Docker has run only against the fake: try it on a clean VM
-- [ ] Our own Traefik's Let's Encrypt certificates: not issued in a test yet
+- [ ] Our own Traefik's Let's Encrypt certificates: not issued yet; the VPS's Traefik
+      issued one through a file route
 - [ ] A Traefik set up by a static file or its environment: `setup` stops, read them
 - [ ] A routes folder not writable from inside Traefik: the helper container
 - [ ] Hooks for games: `pre_switch`, `post_switch`. `builder.before` covers the check before sending
 - [ ] `logs` and `exec` give their output at the end: following logs needs streaming
       in the remote port
 - [ ] HTTPS end to end: the e2e test runs plain HTTP
-- [ ] Not tested yet: TLS and certificate issuing through a file route, and the whole
-      flow on the VPS (the first Arena deploy is that test)
 - [ ] Requests under way across a switch: only read in the source
 - [ ] Where the orbitx-* projects without `.kamal/secrets` get their secrets
 - [ ] How a game server reports "empty", for draining matches
