@@ -181,7 +181,7 @@ pub fn remove(arena: Allocator, remote: Remote, out: *Writer, config: Config, wh
         _ = try remote.run(arena, .{ .argv = try docker.remove(arena, row.name) });
         try out.print("removed {s}\n", .{row.name});
     }
-    const images = try remote.run(arena, .{ .argv = try docker.imageTags(arena, config.image) });
+    const images = try remote.run(arena, .{ .argv = try docker.imageTags(arena, config.image, config.service) });
     if (images.ok()) {
         var tags = std.mem.tokenizeAny(u8, images.stdout, "\r\n");
         while (tags.next()) |tag| {

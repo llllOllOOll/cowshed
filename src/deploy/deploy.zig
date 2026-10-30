@@ -477,7 +477,7 @@ fn prune(self: Run) Error!void {
         try kept_versions.append(self.arena, '\n');
     }
 
-    const images = try self.ask(try docker.imageTags(self.arena, config.image));
+    const images = try self.ask(try docker.imageTags(self.arena, config.image, config.service));
     if (images.ok()) {
         var tags = std.mem.tokenizeAny(u8, images.stdout, "\r\n");
         while (tags.next()) |tag| {

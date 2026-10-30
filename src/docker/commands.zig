@@ -107,8 +107,10 @@ pub fn listAll(arena: Allocator, service: []const u8) Allocator.Error![]const []
     return arena.dupe([]const u8, &.{ "docker", "ps", "-a", "--filter", try std.fmt.allocPrint(arena, "label=service={s}", .{service}), "--format", "{{.Names}}\t{{.State}}\t{{.Label \"version\"}}" });
 }
 
-pub fn imageTags(arena: Allocator, image: []const u8) Allocator.Error![]const []const u8 {
-    return arena.dupe([]const u8, &.{ "docker", "images", "--filter", try std.fmt.allocPrint(arena, "reference={s}", .{image}), "--format", "{{.Tag}}" });
+/// Only images Cowshed built, which carry the service's label: older ones of the
+/// same name are not ours to remove.
+pub fn imageTags(arena: Allocator, image: []const u8, service: []const u8) Allocator.Error![]const []const u8 {
+    return arena.dupe([]const u8, &.{ "docker", "images", "--filter", try std.fmt.allocPrint(arena, "reference={s}", .{image}), "--filter", try std.fmt.allocPrint(arena, "label=service={s}", .{service}), "--format", "{{.Tag}}" });
 }
 
 pub fn pid(arena: Allocator, name: []const u8) Allocator.Error![]const []const u8 {
@@ -154,4 +156,11 @@ test "a container's environment is never asked for" {
     const argv = try inspectConfig(arena.allocator(), "abc");
     try testing.expect(std.mem.indexOf(u8, argv[3], "Env") == null);
     try testing.expectEqualStrings("abc", argv[4]);
+}
+
+test "image tags ask for the service's label" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const argv = try imageTags(arena.allocator(), "app", "s");
+    try testing.expectEqualStrings("label=service=s", argv[5]);
 }
