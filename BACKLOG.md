@@ -14,7 +14,8 @@
 - [x] `lock status`, `lock release`
 - [x] `rollback`, `versions`, `logs`, `exec`, `prune`, `stop`, `remove`, `audit`
 - [x] First real deploy: Arena, on the VPS (2026-10-30). HTTPS, the redirect and a
-      WebSocket handshake checked from outside; the game itself not played yet
+      WebSocket handshake checked from outside. It broke in the browser (`UnknownSystem`:
+      the game behind the engine), fixed the same day; the owner confirmed it working
 - [ ] Orbitville; then both `tools/deploy.sh` removed
 
 ## Second version
@@ -25,6 +26,9 @@
 
 ## Open
 
+- [ ] A page's own check before the switch: a health path proves the server, not that
+      a game starts in the browser. Arena's first deploy passed it broken. A headless
+      browser reading the console caught it (`chromium --headless`, `--enable-logging`)
 - [ ] A server that ignores SIGTERM takes `docker stop`'s full 10 s (Arena's did: exit 137)
 - [ ] A large part being sent shows no progress of its own
 - [ ] Installing Docker has run only against the fake: try it on a clean VM
