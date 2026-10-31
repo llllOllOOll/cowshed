@@ -30,6 +30,14 @@
 
 ## Open
 
+- [ ] Secrets' variables without a step before the command. Today a secrets file's `$VAR`
+      comes from the shell's environment, so each deploy needs
+      `source ~/.my_secrets && cowshed deploy`, and forgetting it stops the deploy. Wanted:
+      the project says where they are (an option in `config/deploy.yml`, or a place Cowshed
+      always looks, per project or per user, kept out of git), and `cowshed deploy` loads
+      them by itself. To decide: the file's format (plain `NAME=value`, or a shell script
+      to run, as such files often are), and whether a variable already in the environment
+      wins. Values never printed, as now
 - [ ] A clean copy lacks what git ignores on the first deploy: a build needing it (Orbitville's
       assets?) must fetch it itself
 - [ ] A page's own check before the switch: a health path proves the server, not that
