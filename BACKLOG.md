@@ -18,6 +18,10 @@
       the game behind the engine), fixed the same day; the owner confirmed it working
 - [ ] Orbitville; then both `tools/deploy.sh` removed
 
+- [x] A project in a monorepo: `branch` and `sources`, built from clean copies, skipped if
+      nothing changed, what it was made from on the container and in the audit log
+      (`tests/monorepo_e2e.sh`)
+
 ## Second version
 
 - [ ] Accessories (database, Keycloak)
@@ -26,6 +30,8 @@
 
 ## Open
 
+- [ ] A clean copy lacks what git ignores on the first deploy: a build needing it (Orbitville's
+      assets?) must fetch it itself
 - [ ] A page's own check before the switch: a health path proves the server, not that
       a game starts in the browser. Arena's first deploy passed it broken. A headless
       browser reading the console caught it (`chromium --headless`, `--enable-logging`)

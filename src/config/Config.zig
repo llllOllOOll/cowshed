@@ -86,6 +86,11 @@ deploy_timeout_s: u32 = DEFAULT_DEPLOY_TIMEOUT_S,
 drain_timeout_s: u32 = DEFAULT_DRAIN_TIMEOUT_S,
 /// A container from before Cowshed, stopped once its traffic has moved.
 replaces: ?[]const u8 = null,
+/// Builds from a clean copy of this branch, whatever is checked out here.
+branch: ?[]const u8 = null,
+/// What makes up the project, also from other repositories, relative to here. A
+/// deploy comes from clean copies of them, and is skipped if none changed.
+sources: []const []const u8 = &.{},
 accessories: []const Accessory = &.{},
 /// What was read and has no effect here (`registry`, `boot`), to tell the user.
 notices: []const []const u8 = &.{},
@@ -269,7 +274,7 @@ const Reader = struct {
         try self.checkKeys(root, 1, "", &.{
             "service",        "image",         "servers",  "registry", "builder", "env",
             "proxy",          "ssh",           "boot",     "cpus",     "memory",  "accessories",
-            "deploy_timeout", "drain_timeout", "replaces",
+            "deploy_timeout", "drain_timeout", "replaces", "branch",   "sources",
         });
 
         var config: Config = .{
@@ -279,6 +284,8 @@ const Reader = struct {
             .cpus = try self.string(root, "cpus", ""),
             .memory = try self.string(root, "memory", ""),
             .replaces = try self.string(root, "replaces", ""),
+            .branch = try self.string(root, "branch", ""),
+            .sources = try self.strings(root, "sources", ""),
             .env = try self.readEnv(root, ""),
             .proxy = try self.readProxy(root, ""),
             .deploy_timeout_s = try self.number(u32, root, "deploy_timeout", "", DEFAULT_DEPLOY_TIMEOUT_S),
@@ -392,6 +399,11 @@ const Reader = struct {
     }
 };
 
+/// Whether a deploy builds from clean copies, rather than this folder as it is.
+pub fn cleanCopy(self: Config) bool {
+    return self.branch != null or self.sources.len > 0;
+}
+
 pub fn isSafeName(name: []const u8) bool {
     for (name) |c| {
         if (!std.ascii.isAlphanumeric(c) and c != '-' and c != '_' and c != '.') return false;
@@ -490,6 +502,16 @@ test "the defaults, as Kamal's" {
     try testing.expectEqual(22, config.ssh.port);
     try testing.expectEqualStrings(".", config.builder.context);
     try testing.expect(config.proxy == null);
+}
+
+test "a project in a monorepo" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var problems: std.ArrayList(Problem) = .empty;
+    const config = try parse(arena.allocator(), MINIMAL ++ "branch: main\nsources:\n  - .\n  - ../../engine\n", &problems);
+    try testing.expectEqualStrings("main", config.branch.?);
+    try testing.expectEqualStrings("../../engine", config.sources[1]);
+    try testing.expect(config.cleanCopy());
 }
 
 test "an env without clear or secret is all clear" {

@@ -71,8 +71,12 @@ pub fn runWith(arena: Allocator, io: Io, argv: []const []const u8, stdin: ?[]con
 }
 
 /// Runs `argv` with this process's own output, for what a person should watch.
-pub fn runInherit(io: Io, argv: []const []const u8) !std.process.Child.Term {
-    var child = try std.process.spawn(io, .{ .argv = argv, .stdin = .ignore });
+pub fn runInherit(io: Io, argv: []const []const u8, cwd: ?[]const u8) !std.process.Child.Term {
+    var child = try std.process.spawn(io, .{
+        .argv = argv,
+        .stdin = .ignore,
+        .cwd = if (cwd) |path| .{ .path = path } else .inherit,
+    });
     defer child.kill(io);
     return child.wait(io);
 }

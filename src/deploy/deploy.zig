@@ -33,6 +33,8 @@ pub const Input = struct {
     version: []const u8,
     /// Who deploys, for the lock and the audit log.
     who: []const u8,
+    /// What it was made from, on its container and in the audit log.
+    sources: ?[]const u8 = null,
     /// Each by the name the container sees. Travels on stdin only.
     secrets: []const Secret = &.{},
     image: ImageSender,
@@ -115,6 +117,23 @@ const COLLECT_BLOBS =
     \\done
 ;
 
+/// Whether what runs now was made from exactly these sources. If the server cannot
+/// say, no: the deploy goes on and meets the trouble itself.
+pub fn liveFrom(arena: Allocator, remote: Remote, service: []const u8, sources: []const u8) Remote.Error!bool {
+    const listing = try remote.run(arena, .{ .argv = try docker.listAll(arena, service) });
+    if (!listing.ok()) return false;
+    var lines = std.mem.splitScalar(u8, listing.stdout, '\n');
+    while (lines.next()) |line| {
+        var fields = std.mem.splitScalar(u8, line, '\t');
+        _ = fields.next() orelse continue;
+        const state = fields.next() orelse continue;
+        _ = fields.next() orelse continue;
+        const made_from = fields.next() orelse continue;
+        if (std.mem.eql(u8, state, "running") and std.mem.eql(u8, made_from, sources)) return true;
+    }
+    return false;
+}
+
 /// False when it stopped; why has been written to `out`.
 pub fn run(arena: Allocator, remote: Remote, out: *Writer, input: Input) Error!bool {
     const self: Run = .{ .arena = arena, .remote = remote, .out = out, .input = input };
@@ -142,7 +161,7 @@ pub fn run(arena: Allocator, remote: Remote, out: *Writer, input: Input) Error!b
     }
     defer releaseLock(self);
 
-    try self.audit("deploy started");
+    try self.audit(if (input.sources) |sources| try std.fmt.allocPrint(arena, "deploy started, from {s}", .{sources}) else "deploy started");
     const done = try deployLocked(self, traefik);
     try self.audit(if (done) "deployed" else "deploy failed");
     return done;
@@ -186,6 +205,7 @@ fn deployLocked(self: Run, traefik: ?detect.Traefik) Error!bool {
         .service = config.service,
         .role = config.role,
         .version = version,
+        .sources = self.input.sources,
         .network = if (traefik) |found| found.network else null,
         .cpus = config.cpus,
         .memory = config.memory,
@@ -692,6 +712,29 @@ test "the order: lock, image, container, health, route, confirm, stop the old, u
     try testing.expect(h.fake.ran("http://app-web-v2:80/up"));
     try testing.expect(!h.fake.ran("docker stop app-web-v2"));
     try h.says("deployed v2");
+}
+
+test "what it was made from: on the container, in the log, and seen as live" {
+    var h = harness();
+    defer h.arena.deinit();
+    try h.begin();
+    var config = PROXIED;
+    config.service = "app";
+    config.image = "app";
+    config.host = "h";
+    const a = h.arena.allocator();
+    try testing.expect(try run(a, h.fake.remote(), &h.output.writer, .{
+        .config = config,
+        .version = "v2",
+        .who = "seven",
+        .sources = "game@abc,engine@def",
+        .image = .{ .ptr = &h.sender, .sendFn = Sender.send },
+    }));
+    try testing.expect(h.fake.ran("--label sources=game@abc,engine@def"));
+    try testing.expect(h.fake.ran("deploy started, from game@abc,engine@def"));
+    try h.on("docker ps -a", 0, "app-web-v2\trunning\tv2\tgame@abc,engine@def\napp-web-v1\texited\tv1\tgame@old,engine@def\n");
+    try testing.expect(try liveFrom(a, h.fake.remote(), "app", "game@abc,engine@def"));
+    try testing.expect(!try liveFrom(a, h.fake.remote(), "app", "game@old,engine@def"));
 }
 
 test "a secret travels on stdin, never on a command line" {

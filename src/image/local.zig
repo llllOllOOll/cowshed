@@ -39,22 +39,129 @@ pub fn who(arena: Allocator, io: Io, environ: *const std.process.Environ.Map) []
 }
 
 /// The project's own build step, watched as it runs, knowing the version.
-pub fn runBefore(arena: Allocator, io: Io, command: []const u8, image_version: []const u8) !bool {
+pub fn runBefore(arena: Allocator, io: Io, command: []const u8, image_version: []const u8, cwd: ?[]const u8) !bool {
     const variable = try std.fmt.allocPrint(arena, "COWSHED_VERSION={s}", .{image_version});
-    const term = try process.runInherit(io, &.{ "env", variable, "sh", "-c", command });
+    const term = try process.runInherit(io, &.{ "env", variable, "sh", "-c", command }, cwd);
     return term == .exited and term.exited == 0;
 }
 
-pub fn build(arena: Allocator, io: Io, builder: Config.Builder, service: []const u8, tag: []const u8) !bool {
+pub fn build(arena: Allocator, io: Io, builder: Config.Builder, service: []const u8, tag: []const u8, cwd: ?[]const u8) !bool {
     var argv: std.ArrayList([]const u8) = .empty;
     try argv.appendSlice(arena, &.{ "docker", "build", "-t", tag, "--label", try std.fmt.allocPrint(arena, "service={s}", .{service}), "-f", builder.dockerfile });
     if (builder.arch) |arch| {
         try argv.appendSlice(arena, &.{ "--platform", try std.fmt.allocPrint(arena, "linux/{s}", .{arch}) });
     }
     try argv.append(arena, builder.context);
-    const term = try process.runInherit(io, argv.items);
+    const term = try process.runInherit(io, argv.items, cwd);
     return term == .exited and term.exited == 0;
 }
+
+pub const Source = struct {
+    /// Its folder's name.
+    name: []const u8,
+    /// Its repository's folder, and where in it this source is.
+    top: []const u8,
+    prefix: []const u8,
+    /// The whole commit that will be built, short for showing.
+    commit: []const u8,
+    short: []const u8,
+    /// The last commit that touched this source's own folder.
+    touched: []const u8,
+    /// Files in the folder that differ from what will be built.
+    uncommitted: usize,
+};
+
+pub const SourcesResult = union(enum) {
+    sources: []const Source,
+    /// Why they cannot be read.
+    failed: []const u8,
+};
+
+fn git(arena: Allocator, io: Io, folder: []const u8, args: []const []const u8) ?[]const u8 {
+    var argv: std.ArrayList([]const u8) = .empty;
+    argv.appendSlice(arena, &.{ "git", "-C", folder }) catch return null;
+    argv.appendSlice(arena, args) catch return null;
+    return output(arena, io, argv.items);
+}
+
+/// The first is the project itself: `.` if the config does not list it.
+pub fn readSources(arena: Allocator, io: Io, listed: []const []const u8, branch: ?[]const u8) !SourcesResult {
+    var folders: std.ArrayList([]const u8) = .empty;
+    try folders.append(arena, ".");
+    for (listed) |folder| {
+        if (!std.mem.eql(u8, folder, ".")) try folders.append(arena, folder);
+    }
+    var sources: std.ArrayList(Source) = .empty;
+    for (folders.items) |folder| {
+        const top = git(arena, io, folder, &.{ "rev-parse", "--show-toplevel" }) orelse {
+            return .{ .failed = try std.fmt.allocPrint(arena, "`{s}` is not in a git repository", .{folder}) };
+        };
+        const prefix = git(arena, io, folder, &.{ "rev-parse", "--show-prefix" }) orelse "";
+        const ref = branch orelse "HEAD";
+        const commit = git(arena, io, folder, &.{ "rev-parse", "--verify", try std.fmt.allocPrint(arena, "{s}^{{commit}}", .{ref}) }) orelse {
+            return .{ .failed = try std.fmt.allocPrint(arena, "`{s}` has no branch `{s}`", .{ folder, ref }) };
+        };
+        const touched = git(arena, io, folder, &.{ "log", "-1", "--format=%h", commit, "--", "." }) orelse "";
+        const status = git(arena, io, folder, &.{ "status", "--porcelain", "--", "." }) orelse "";
+        var changed: usize = 0;
+        var lines = std.mem.tokenizeScalar(u8, status, '\n');
+        while (lines.next()) |_| changed += 1;
+        const full = try std.fmt.allocPrint(arena, "{s}/{s}", .{ top, std.mem.trimEnd(u8, prefix, "/") });
+        try sources.append(arena, .{
+            .name = std.fs.path.basename(std.mem.trimEnd(u8, full, "/")),
+            .top = top,
+            .prefix = prefix,
+            .commit = commit,
+            .short = commit[0..@min(commit.len, SHORT_COMMIT)],
+            .touched = touched,
+            .uncommitted = changed,
+        });
+    }
+    return .{ .sources = sources.items };
+}
+
+/// `arena@abc,engine@def`: the same when nothing that makes up the project changed.
+pub fn fingerprint(arena: Allocator, sources: []const Source) ![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    for (sources, 0..) |source, i| {
+        if (i > 0) try out.append(arena, ',');
+        try out.appendSlice(arena, source.name);
+        try out.append(arena, '@');
+        try out.appendSlice(arena, source.touched);
+    }
+    return out.items;
+}
+
+/// Where the repositories keep their places relative to each other, so a path
+/// like `../../engine` still holds. Kept between deploys: what git ignores, such
+/// as a build's downloads, need not come again.
+pub fn prepareCopies(arena: Allocator, io: Io, environ: *const std.process.Environ.Map, service: []const u8, sources: []const Source) !?[]const u8 {
+    const cache = if (environ.get("XDG_CACHE_HOME")) |dir| dir else try std.fmt.allocPrint(arena, "{s}/.cache", .{environ.get("HOME") orelse return null});
+    const root = try std.fmt.allocPrint(arena, "{s}/cowshed/clones/{s}", .{ cache, service });
+
+    var common: []const u8 = std.fs.path.dirname(sources[0].top) orelse "/";
+    for (sources) |source| {
+        while (!std.mem.startsWith(u8, source.top, common)) common = std.fs.path.dirname(common) orelse "/";
+    }
+    for (sources) |source| {
+        const place = try std.fs.path.join(arena, &.{ root, source.top[common.len..] });
+        const has_copy = output(arena, io, &.{ "git", "-C", place, "rev-parse", "--is-inside-work-tree" }) != null and
+            std.mem.eql(u8, output(arena, io, &.{ "git", "-C", place, "rev-parse", "--show-toplevel" }) orelse "", place);
+        if (!has_copy) {
+            _ = process.run(arena, io, &.{ "rm", "-rf", place }, null) catch return null;
+            _ = process.run(arena, io, &.{ "mkdir", "-p", std.fs.path.dirname(place) orelse "/" }, null) catch return null;
+            if (output(arena, io, &.{ "git", "clone", "--quiet", "--no-checkout", source.top, place }) == null) return null;
+        }
+        if (git(arena, io, place, &.{ "fetch", "--quiet", "origin", source.commit }) == null) return null;
+        if (git(arena, io, place, &.{ "checkout", "--quiet", "--force", "--detach", source.commit }) == null) return null;
+        // What git ignores stays: downloads and caches, which the build needs fast.
+        if (git(arena, io, place, &.{ "clean", "-fdq" }) == null) return null;
+    }
+    const project = sources[0];
+    return try std.fs.path.join(arena, &.{ root, project.top[common.len..], project.prefix });
+}
+
+const SHORT_COMMIT = 7;
 
 const SAVE =
     \\d=$(mktemp -d) && docker save -o "$d/image.tar" "$1" && tar -xf "$d/image.tar" -C "$d" && rm "$d/image.tar" && printf %s "$d"
@@ -90,4 +197,17 @@ test "a command's stdout, and its failure" {
     const a = arena.allocator();
     try testing.expectEqualStrings("value\n", try shell(a, testing.io, "echo value"));
     try testing.expectError(error.CommandFailed, shell(a, testing.io, "exit 3"));
+}
+
+test "a fingerprint names each source and what last touched it" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const base: Source = .{ .name = "", .top = "", .prefix = "", .commit = "", .short = "", .touched = "", .uncommitted = 0 };
+    var a = base;
+    a.name = "game";
+    a.touched = "abc";
+    var b = base;
+    b.name = "engine";
+    b.touched = "def";
+    try testing.expectEqualStrings("game@abc,engine@def", try fingerprint(arena.allocator(), &.{ a, b }));
 }

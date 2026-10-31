@@ -49,6 +49,27 @@ spiderme_old.
 | `cowshed audit` | Who deployed what and when |
 | `cowshed accessory boot / stop / logs / exec NAME` | Long-lived services (database, Keycloak) |
 
+## A project in a monorepo
+
+Each project has its own `config/deploy.yml`, and runs from its own folder. With
+`branch` or `sources`, what goes is what is committed, whatever is checked out here:
+
+    branch: main
+    sources:
+      - .
+      - ../../engine
+
+- **Clean copies:** each source's repository is copied to
+  `~/.cache/cowshed/clones/<service>/`, keeping their places relative to each other,
+  and set to the branch's commit. Others' uncommitted work is told and left out.
+  Copies are kept: what git ignores, a build's downloads, need not come again.
+- **Version:** the project's repository commit, as in Kamal. It says nothing of
+  whether the project changed, since a monorepo's commit may be another project's.
+- **Whether it changed:** `game@abc,engine@def`, the last commit touching each source,
+  is kept on the container and in the audit log. If what runs has the same, the deploy
+  says so and stops; `--force` goes on. `versions` shows it.
+- `--dirty` builds this folder as it is, as a test.
+
 ## The first setup
 
 There is no Cowshed proxy: Traefik is the proxy. `cowshed setup` creates what a

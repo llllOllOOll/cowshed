@@ -5,8 +5,9 @@ pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
     const args = try init.minimal.args.toSlice(arena);
 
-    // No buffer: each step shows as it happens, also through a pipe.
-    var stdout = std.Io.File.stdout().writer(init.io, &.{});
+    // No buffer: each step shows as it happens, also through a pipe. Streaming: to
+    // a file, a positional writer would overwrite what a child process wrote there.
+    var stdout = std.Io.File.stdout().writerStreaming(init.io, &.{});
     const out = &stdout.interface;
 
     const code = try cli.run(arena, init.io, init.environ_map, out, @ptrCast(args[1..]));

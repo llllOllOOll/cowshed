@@ -23,7 +23,7 @@ const REMOVE_FILES =
 
 pub const Error = Remote.Error || Writer.Error;
 
-const Row = struct { name: []const u8, state: []const u8, version: []const u8 };
+const Row = struct { name: []const u8, state: []const u8, version: []const u8, sources: []const u8 = "" };
 
 fn parseRows(arena: Allocator, listing: []const u8) Allocator.Error![]const Row {
     var rows: std.ArrayList(Row) = .empty;
@@ -33,7 +33,7 @@ fn parseRows(arena: Allocator, listing: []const u8) Allocator.Error![]const Row 
         const name = fields.next() orelse continue;
         const state = fields.next() orelse continue;
         const version = fields.next() orelse continue;
-        try rows.append(arena, .{ .name = name, .state = state, .version = version });
+        try rows.append(arena, .{ .name = name, .state = state, .version = version, .sources = fields.next() orelse "" });
     }
     return rows.items;
 }
@@ -66,7 +66,9 @@ pub fn versions(arena: Allocator, remote: Remote, out: *Writer, config: Config) 
     }
     for (rows) |row| {
         const mark: []const u8 = if (std.mem.eql(u8, row.state, "running")) "live" else "    ";
-        try out.print("{s}  {s}  {s}\n", .{ mark, row.version, row.name });
+        try out.print("{s}  {s}  {s}", .{ mark, row.version, row.name });
+        if (row.sources.len > 0) try out.print("  ({s})", .{row.sources});
+        try out.writeByte('\n');
     }
     return true;
 }
@@ -248,6 +250,9 @@ test "versions mark what is live" {
     try testing.expect(try versions(h.arena.allocator(), h.fake.remote(), &h.output.writer, CONFIG));
     try h.says("live  v2  app-web-v2");
     try h.says("      v1  app-web-v1");
+    try h.on("docker ps -a", 0, "a\trunning\tv3\tgame@abc\n");
+    try testing.expect(try versions(h.arena.allocator(), h.fake.remote(), &h.output.writer, CONFIG));
+    try h.says("live  v3  a  (game@abc)");
 }
 
 test "logs are the live container's" {

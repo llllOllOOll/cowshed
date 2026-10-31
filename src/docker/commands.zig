@@ -41,6 +41,8 @@ pub const AppContainer = struct {
     service: []const u8,
     role: []const u8,
     version: []const u8,
+    /// What it was made from, when known.
+    sources: ?[]const u8 = null,
     network: ?[]const u8 = null,
     cpus: ?[]const u8 = null,
     memory: ?[]const u8 = null,
@@ -65,6 +67,9 @@ pub fn runApp(arena: Allocator, app: AppContainer) Allocator.Error![]const []con
         "--label", try std.fmt.allocPrint(arena, "role={s}", .{app.role}),
         "--label", try std.fmt.allocPrint(arena, "version={s}", .{app.version}),
     });
+    if (app.sources) |sources| {
+        try argv.appendSlice(arena, &.{ "--label", try std.fmt.allocPrint(arena, "sources={s}", .{sources}) });
+    }
     for (app.labels) |label| {
         try argv.appendSlice(arena, &.{ "--label", try std.fmt.allocPrint(arena, "{s}={s}", .{ label.name, label.value }) });
     }
@@ -104,7 +109,7 @@ fn appendWords(arena: Allocator, argv: *std.ArrayList([]const u8), text: []const
 }
 
 pub fn listAll(arena: Allocator, service: []const u8) Allocator.Error![]const []const u8 {
-    return arena.dupe([]const u8, &.{ "docker", "ps", "-a", "--filter", try std.fmt.allocPrint(arena, "label=service={s}", .{service}), "--format", "{{.Names}}\t{{.State}}\t{{.Label \"version\"}}" });
+    return arena.dupe([]const u8, &.{ "docker", "ps", "-a", "--filter", try std.fmt.allocPrint(arena, "label=service={s}", .{service}), "--format", "{{.Names}}\t{{.State}}\t{{.Label \"version\"}}\t{{.Label \"sources\"}}" });
 }
 
 /// Only images Cowshed built, which carry the service's label: older ones of the

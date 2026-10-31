@@ -25,7 +25,8 @@ pub const USAGE =
     \\  deploy     Build, send and start a version, then move the traffic to it
     \\    -c, --config <path>    Another config file
     \\    --secrets <path>       Another secrets file
-    \\    --dirty                Ship uncommitted work, as a test
+    \\    --dirty                Ship this folder as it is, as a test
+    \\    --force                Deploy even if nothing changed
     \\  lock <status|release>   The deploy lock, for after an interrupted deploy
     \\    -c, --config <path>    Another config file
     \\  rollback <version>      Back to a version still on the server: no build
@@ -115,6 +116,8 @@ fn parseDeploy(args: []const []const u8) Parsed {
         const arg = args[i];
         if (eql(arg, "--dirty")) {
             options.dirty = true;
+        } else if (eql(arg, "--force")) {
+            options.force = true;
         } else if (eql(arg, "-c") or eql(arg, "--config")) {
             i += 1;
             if (i == args.len) return .{ .invalid = arg };

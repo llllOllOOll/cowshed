@@ -11,6 +11,7 @@ zig build test       # Unit tests
 scripts/check.sh     # Format, tests and the architecture rules
 tests/setup_e2e.sh   # setup over real SSH on a throwaway server (needs Docker)
 tests/deploy_e2e.sh  # deploy the same way, under traffic, with its failures
+tests/monorepo_e2e.sh # a project in a monorepo, from clean copies
 ```
 
 ## Architecture: ports and adapters
