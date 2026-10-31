@@ -1,11 +1,11 @@
-//! `.kamal/secrets`: `NAME=value` lines, with `$VAR`, `${VAR}` and `$(command)`.
+//! The secrets file: `NAME=value` lines, with `$VAR`, `${VAR}` and `$(command)`.
 //! Reading names runs nothing; only `resolve` expands values and runs commands.
 //! A value prints as `[redacted]`, and no error carries one.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-pub const DEFAULT_PATH = ".kamal/secrets";
+pub const DEFAULT_PATH = ".cowshed/secrets";
 
 pub const Secret = struct {
     name: []const u8,

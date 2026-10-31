@@ -1,4 +1,4 @@
-//! A project's `config/deploy.yml`: Kamal's names for what Cowshed does. An
+//! A project's `config/deploy.yml`, what Cowshed needs to deploy it. An
 //! option Cowshed does not know is refused by name, never ignored.
 
 const std = @import("std");
@@ -86,6 +86,8 @@ deploy_timeout_s: u32 = DEFAULT_DEPLOY_TIMEOUT_S,
 drain_timeout_s: u32 = DEFAULT_DRAIN_TIMEOUT_S,
 /// A container from before Cowshed, stopped once its traffic has moved.
 replaces: ?[]const u8 = null,
+/// The secrets file, if not the default.
+secrets: ?[]const u8 = null,
 /// Builds from a clean copy of this branch, whatever is checked out here.
 branch: ?[]const u8 = null,
 /// What makes up the project, also from other repositories, relative to here. A
@@ -274,7 +276,8 @@ const Reader = struct {
         try self.checkKeys(root, 1, "", &.{
             "service",        "image",         "servers",  "registry", "builder", "env",
             "proxy",          "ssh",           "boot",     "cpus",     "memory",  "accessories",
-            "deploy_timeout", "drain_timeout", "replaces", "branch",   "sources",
+            "deploy_timeout", "drain_timeout", "replaces", "secrets",  "branch",  "secrets",
+            "sources",
         });
 
         var config: Config = .{
@@ -284,6 +287,7 @@ const Reader = struct {
             .cpus = try self.string(root, "cpus", ""),
             .memory = try self.string(root, "memory", ""),
             .replaces = try self.string(root, "replaces", ""),
+            .secrets = try self.string(root, "secrets", ""),
             .branch = try self.string(root, "branch", ""),
             .sources = try self.strings(root, "sources", ""),
             .env = try self.readEnv(root, ""),
@@ -449,7 +453,7 @@ const GAME =
     \\registry:
     \\  username: me
     \\  password:
-    \\    - KAMAL_REGISTRY_PASSWORD
+    \\    - REGISTRY_PASSWORD
     \\
 ;
 
@@ -492,7 +496,7 @@ test "a whole config" {
     try testing.expectEqual(1, config.notices.len);
 }
 
-test "the defaults, as Kamal's" {
+test "the defaults" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     var problems: std.ArrayList(Problem) = .empty;
@@ -510,6 +514,7 @@ test "a project in a monorepo" {
     var problems: std.ArrayList(Problem) = .empty;
     const config = try parse(arena.allocator(), MINIMAL ++ "branch: main\nsources:\n  - .\n  - ../../engine\n", &problems);
     try testing.expectEqualStrings("main", config.branch.?);
+    try testing.expect(config.secrets == null);
     try testing.expectEqualStrings("../../engine", config.sources[1]);
     try testing.expect(config.cleanCopy());
 }

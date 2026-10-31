@@ -189,7 +189,7 @@ test "commands and their flags" {
     try testing.expectEqual(.help, std.meta.activeTag(parse(&.{"--help"})));
     const parsed = parse(&.{ "check", "-c", "a.yml", "--secrets", "s", "--remote" }).check;
     try testing.expectEqualStrings("a.yml", parsed.config_path);
-    try testing.expectEqualStrings("s", parsed.secrets_path);
+    try testing.expectEqualStrings("s", parsed.secrets_path.?);
     try testing.expect(parsed.remote);
 }
 

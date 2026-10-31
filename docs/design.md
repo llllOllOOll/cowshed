@@ -1,35 +1,10 @@
-# Cowshed: design (draft, not approved)
+# Cowshed: design
 
-Cowshed deploys Docker containers over SSH to a server, as one Zig binary. It
-takes over from Kamal in the owner's projects and from each game's
-`tools/deploy.sh`. On the server it needs only Docker and SSH.
-
-Status of what follows: Kamal's flow was read in the gem (2.10.1). kamal-proxy
-(01ec8b8) and Traefik (master 38d53dd, v3.8-rc era) were read in source. Traefik's
-runtime behaviour was then tested on 3.6.6, locally: docs/spikes.md. Nothing has
-been run on a real server yet.
-
-## What the projects use
-
-Eight `config/deploy.yml` were read for structure only, no values: orbitx,
-orbitx-membros, orbitx-logs, orbitx-ia, orbitx-financeiro, smoney, smoney-prod,
-spiderme_old.
-
-- Each has one role (`web`) and one host, on 3 distinct servers (5 on one, 2 on
-  another, 1 on a third). Multi-host and multi-role deploys are not needed yet.
-- Options in use: `service`, `image`, `servers.web.{hosts,labels}`, `registry`,
-  `builder.{arch,context,dockerfile}`, `env.{clear,secret}`,
-  `proxy.{host,app_port,ssl,ssl_redirect,forward_headers}`, `ssh.{user,keys}`,
-  `boot.{limit,wait}`, `deploy_timeout`, `accessories`.
-- Accessories in use: `db` (7), `keycloak` (5, routed through the proxy with a
-  health check), `autocgi_proxy` (5), with `image`, `host`, `port`, `cmd`, `env`,
-  `files`, `directories`, `volumes`.
-- The orbitx family also sets Traefik TCP labels on the app (`autocgi`).
-- YAML: no anchors or merges. One folded block (`cmd: >`). ERB only in comments.
-  No active hooks anywhere.
-- `.kamal/secrets` exists in orbitx, smoney, smoney-prod and spiderme_old, and
-  uses `$(...)` command substitution. The other orbitx-* have none in their own
-  folder (where theirs come from is not yet read).
+Cowshed deploys Docker containers over SSH to a server, as one Zig binary. On the
+server it needs only Docker and SSH. How to use it is in `commands.md` and
+`configuration.md`; this file says how it works and why. What was tested, and how, is
+in `spikes.md`: Traefik's behaviour on 3.6.6, on this machine. Every command has run
+on a throwaway server; `setup` and `deploy` also on a real one, for one app.
 
 ## Commands
 
@@ -63,7 +38,7 @@ Each project has its own `config/deploy.yml`, and runs from its own folder. With
   `~/.cache/cowshed/clones/<service>/`, keeping their places relative to each other,
   and set to the branch's commit. Others' uncommitted work is told and left out.
   Copies are kept: what git ignores, a build's downloads, need not come again.
-- **Version:** the project's repository commit, as in Kamal. It says nothing of
+- **Version:** the project's repository commit. It says nothing of
   whether the project changed, since a monorepo's commit may be another project's.
 - **Whether it changed:** `game@abc,engine@def`, the last commit touching each source,
   is kept on the container and in the audit log. If what runs has the same, the deploy
@@ -74,8 +49,8 @@ Each project has its own `config/deploy.yml`, and runs from its own folder. With
 
 There is no Cowshed proxy: Traefik is the proxy. `cowshed setup` creates what a
 new server lacks and changes nothing that exists:
-1. **Docker:** if missing, install it with Docker's convenience script, as Kamal
-   does; this needs root. Without root, stop and say what to do.
+1. **Docker:** if missing, install it with Docker's convenience script; this needs
+   root. Without root, stop and say what to do.
 2. **Network:** the one the running Traefik watches, or a new `cowshed` network.
 3. **Traefik:** apply "The proxy" below. Ours, `cowshed-traefik`, is pinned to the
    version tested and runs on 80 and 443 with a Let's Encrypt resolver, a persisted
@@ -97,7 +72,7 @@ how far along it is every 5 s.
 1. Read the config and resolve secrets locally; stop on anything missing.
 2. Check the host: Docker, proxy (below), disk.
 3. Take the lock: `mkdir` on the server, atomic, with who, when and which version
-   inside. Released on failure too. The build runs before it, as in Kamal.
+   inside. Released on failure too. The build runs before it.
 4. Get the image to the server (below).
 5. Write the env file for this version on the server, mode 0600; secrets never
    go on a command line.
@@ -136,8 +111,7 @@ Look at the host first:
   or recreating its container, which touches every other app on that host. Only
   with the owner's explicit yes, never silently.
 - **Nothing on 80/443:** start our own, with a persisted `acme.json`.
-- **kamal-proxy:** a server still on Kamal. See Migration.
-- **Anything else (nginx, Caddy):** stop with a clear message.
+- **Anything else on 80/443:** stop with a clear message. See Moving a server.
 
 Each app owns one file holding its routers and services, so a switch is one
 rename. It addresses the versioned container by name
@@ -159,9 +133,8 @@ What the source says this costs us, and what Cowshed does about it:
 | A resolver is static config: a router naming an unknown one only logs an error | Read the resolvers first, refuse an unknown one |
 | The switch has no per-server connection count or drain signal | Count from the container's side (below) |
 
-## Drain: where Cowshed differs from Kamal
+## Drain
 
-kamal-proxy waits up to 30 s for ordinary requests but **cuts WebSockets at once**.
 With Traefik, tested, WebSockets stay on the old container until either side
 closes; requests under way should too (read in source, not tested); keep-alive clients move on their
 next request, and no setting bounds any of it.
@@ -182,24 +155,20 @@ MB whole (docs/spikes.md). It needs only Docker and `tar` on the server: the VPS
 no `rsync`, and no sudo to install it.
 
 A project's own build (`builder.before`) runs here too, so the server never compiles
-or builds. `prune` removes blobs no kept image uses. `registry` in a Kamal file is
-read and ignored with a notice. A registry would only pay with several servers.
+or builds. `prune` removes blobs no kept image uses. `registry` in a config is read
+and ignored with a notice. A registry would only pay with several servers.
 
 ## Config
 
-`config/deploy.yml` with the same names as Kamal, so a project moves with little
-or no change; the parser takes what the table above lists and **refuses an unknown
-option by name** rather than ignoring it. Additions, all optional: `builder.before`,
-`drain_timeout`, `cpus`, `memory`.
+Each project has a `config/deploy.yml` (`configuration.md`). The parser **refuses an
+unknown option by name** rather than ignoring it.
 
 - **YAML:** std has none, so a small parser for the subset in use: maps, lists,
-  scalars, comments; no anchors. Its own tests, against the eight real files.
-- **ERB:** not supported and refused by line; the real files have it only in
-  comments.
-- **Secrets:** `.kamal/secrets` read as is, `$(...)` run through `sh`, so existing
-  files work unchanged. Never logged; the config dump redacts them.
-- **Labels:** kept on the container, so the orbitx TCP router (`autocgi`) keeps
-  working if that server has a Traefik with the Docker provider.
+  scalars, comments; no anchors. Templates are refused by line.
+- **Secrets:** a file of `NAME=value` lines, `.cowshed/secrets` unless told otherwise;
+  only those the config uses are expanded, `$(...)` through `sh`. Never logged, and a
+  value prints redacted.
+- **Labels:** kept on the container, for a Traefik with the Docker provider.
 - **SSH:** the system's `ssh` as a child process, with connection sharing
   (`ControlMaster`), rather than an SSH library in Zig: keys, agent and
   `~/.ssh/config` work as they already do. Remote arguments are quoted per word;
@@ -219,18 +188,12 @@ hooks, and `drain_timeout`. The rest belongs to the engine and the game:
   `drain_timeout` lets the old finish. How a server reports "empty" is to be
   decided.
 
-## Migration
+## Moving a server
 
-Order: first a game on the VPS, which already has Traefik and no kamal-proxy; then
-a small project; OrbitX last.
-
-A server with kamal-proxy has it holding 80/443, so moving means replacing it with
-Traefik: a short cut for **every app on that server** (5 for one, 2 for another),
-and certificates issued again. Plan a window; test `acme.json` persistence first.
-Never done without the owner's go-ahead for that server.
-
-Kamal's own `proxy` keys become Traefik routers. Accessories' containers keep
-running as they are; Cowshed adopts them by name, it does not recreate a database.
+A server where another proxy holds 80 and 443 has to give them to Traefik first: a
+short cut for **every app on that server**, and certificates issued again. Plan a
+window, test that `acme.json` persists, and move an app at a time with `replaces`.
+Long-lived containers keep running as they are.
 
 ## Spikes
 
@@ -246,10 +209,3 @@ Read in `tools/deploy.sh` of Orbitville and Arena:
 - `cmd` arguments per word, and `cpus` and `memory` as `docker run` limits.
 - `stop` and `remove`.
 - Health: both serve HTTP, so a path replaces waiting for a line in the logs.
-
-## Decisions for the owner
-
-1. The migration order above, and that OrbitX moves last.
-2. Scope of the first version, proposed: `setup`, `deploy`, `rollback`,
-   `versions`, `logs`, `exec`, `prune`, lock, audit, one host, one role.
-   Accessories in the second, since a game needs none and OrbitX moves last.

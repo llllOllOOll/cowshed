@@ -13,7 +13,8 @@ const Allocator = std.mem.Allocator;
 
 pub const Options = struct {
     config_path: []const u8 = check.DEFAULT_CONFIG_PATH,
-    secrets_path: []const u8 = secrets.DEFAULT_PATH,
+    /// Above the config's own `secrets`.
+    secrets_path: ?[]const u8 = null,
     dirty: bool = false,
     /// Deploys even if nothing changed.
     force: bool = false,
@@ -88,7 +89,7 @@ pub fn run(arena: Allocator, io: std.Io, environ: *const std.process.Environ.Map
     }
 
     // Before anything slow, and nothing reaches the server if one is missing.
-    const resolved = try resolveSecrets(arena, io, environ, out, config, options.secrets_path) orelse return false;
+    const resolved = try resolveSecrets(arena, io, environ, out, config, options.secrets_path orelse config.secrets orelse secrets.DEFAULT_PATH) orelse return false;
 
     var build_folder: ?[]const u8 = null;
     if (clean) {

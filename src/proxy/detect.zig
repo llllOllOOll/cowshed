@@ -25,7 +25,7 @@ pub const Traefik = struct {
 
 pub const Outcome = union(enum) {
     traefik: Traefik,
-    /// No Traefik and no kamal-proxy runs here.
+    /// No Traefik runs here.
     none,
     /// Why this server cannot be used as it is.
     stopped: []const u8,
@@ -42,9 +42,6 @@ pub fn detect(arena: Allocator, remote: Remote, proxy: Config.Proxy) Remote.Erro
         const id = fields.next() orelse continue;
         const image = fields.next() orelse continue;
         const name = fields.next() orelse continue;
-        if (traefik.isKamalProxyImage(image)) {
-            return stopped(arena, "kamal-proxy runs on this server and holds 80 and 443. Moving away from it cuts every app there for a moment: see docs/design.md, Migration", .{});
-        }
         if (!traefik.isTraefikImage(image)) continue;
         if (running != null) return stopped(arena, "more than one Traefik runs on this server: leave one", .{});
         running = .{ .id = id, .image = image, .name = name, .network = "", .routes_dir = "", .http_entrypoint = null, .https_entrypoint = null, .resolver = null, .api = false };

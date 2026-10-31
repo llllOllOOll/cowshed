@@ -71,10 +71,6 @@ pub fn isTraefikImage(image: []const u8) bool {
     return std.mem.eql(u8, imageName(image), "traefik");
 }
 
-pub fn isKamalProxyImage(image: []const u8) bool {
-    return std.mem.eql(u8, imageName(image), "kamal-proxy");
-}
-
 fn imageName(image: []const u8) []const u8 {
     const base = if (std.mem.lastIndexOfScalar(u8, image, '/')) |i| image[i + 1 ..] else image;
     const tag = std.mem.indexOfScalar(u8, base, ':') orelse return base;
@@ -169,7 +165,6 @@ test "image names" {
     try testing.expect(isTraefikImage("traefik:latest"));
     try testing.expect(isTraefikImage("registry.example:5000/x/traefik:3"));
     try testing.expect(!isTraefikImage("my-traefik-app:1"));
-    try testing.expect(isKamalProxyImage("basecamp/kamal-proxy:v0.9"));
     try testing.expect(isFloating("traefik"));
     try testing.expect(isFloating("traefik:latest"));
     try testing.expect(!isFloating("traefik:3.6.6"));

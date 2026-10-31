@@ -35,7 +35,7 @@ done
 docker exec -i "$NAME" sh -c "mkdir -p /root/.ssh && chmod 700 /root/.ssh && cat > /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys" < "$WORK/key.pub"
 
 APP="$WORK/app"
-mkdir -p "$APP/config" "$APP/.kamal"
+mkdir -p "$APP/config" "$APP/.cowshed"
 cp "$ROOT/tests/app/app.py" "$ROOT/tests/app/Dockerfile" "$APP/"
 cat > "$APP/config/deploy.yml" <<YAML
 service: e2e
@@ -64,13 +64,13 @@ deploy_timeout: 8
 drain_timeout: 3
 replaces: legacy
 YAML
-cat > "$APP/.kamal/secrets" <<'SECRETS'
+cat > "$APP/.cowshed/secrets" <<'SECRETS'
 TOKEN=$(printf 'hidden-token-value')
 FROM_ENV_VAR=$E2E_FROM_ENV
 NOT_WANTED=$(exit 1)
 SECRETS
 export E2E_FROM_ENV=hidden-env-value
-printf 'built.txt\n.kamal\n' > "$APP/.gitignore"
+printf 'built.txt\n.cowshed\n' > "$APP/.gitignore"
 git -C "$APP" init -q
 git -C "$APP" config user.email e2e@example.com
 git -C "$APP" config user.name e2e-tester

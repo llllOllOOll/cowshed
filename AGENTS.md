@@ -1,7 +1,8 @@
 # Cowshed: agent guide
 
 Cowshed deploys Docker containers to a server over SSH, as one Zig 0.17 binary.
-README.md is the overview, `docs/design.md` the design, BACKLOG.md the plan.
+README.md is the overview, `docs/commands.md` and `docs/configuration.md` its use,
+`docs/design.md` the design, BACKLOG.md the plan.
 
 ## Commands
 
@@ -53,6 +54,9 @@ Folders appear with their first file; this tree is the target.
 In the same commit as a change: this file and `docs/` when a command, rule or
 behaviour changes, README.md when what a user sees changes, BACKLOG.md for what
 landed and what was found.
+
+**The docs speak only of Cowshed:** what it does and why, never what inspired it or
+how other tools compare.
 
 ## Code style
 

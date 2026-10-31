@@ -343,17 +343,7 @@ test "what an existing Traefik lacks for ssl, or from inside" {
     }
 }
 
-test "kamal-proxy, two Traefiks, and another program on the ports stop it" {
-    {
-        var h = Harness.create();
-        defer h.deinit();
-        h.start();
-        try newServer(&h);
-        try h.on("docker ps", 0, "a\tbasecamp/kamal-proxy:v0.9\tkamal-proxy\n");
-        try testing.expect(!try h.setup(PROXY, .{}));
-        try h.says("kamal-proxy runs on this server");
-        try testing.expect(!h.fake.ran("docker run"));
-    }
+test "two Traefiks, and another program on the ports, stop it" {
     {
         var h = Harness.create();
         defer h.deinit();

@@ -4,7 +4,8 @@ Cowshed deploys Docker containers to a server over SSH, as one Zig binary. The
 server needs nothing of Cowshed's: no agent, no panel and no proxy of its own.
 
 **Status:** early. Every command is tested on a throwaway server, and `setup` and
-`deploy` have run on a real one, for one app. The plan is in [BACKLOG.md](BACKLOG.md), the design in [docs/design.md](docs/design.md).
+`deploy` have run on a real one, for one app. The plan is in [BACKLOG.md](BACKLOG.md). Using it: [commands](docs/commands.md),
+[configuration](docs/configuration.md). How it works: [design](docs/design.md).
 
 ## How it will work
 

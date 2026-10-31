@@ -12,7 +12,8 @@ pub const DEFAULT_CONFIG_PATH = "config/deploy.yml";
 
 pub const Options = struct {
     config_path: []const u8 = DEFAULT_CONFIG_PATH,
-    secrets_path: []const u8 = secrets.DEFAULT_PATH,
+    /// Above the config's own `secrets`.
+    secrets_path: ?[]const u8 = null,
     remote: bool = false,
 };
 
@@ -25,7 +26,7 @@ pub fn run(arena: Allocator, io: std.Io, out: *std.Io.Writer, options: Options) 
     try out.print("{s}: {s}, role {s}, host {s}\n", .{ options.config_path, config.service, config.role, config.host });
     for (config.notices) |notice| try out.print("notice: {s}\n", .{notice});
 
-    var ok = try checkSecrets(arena, io, out, config, options.secrets_path);
+    var ok = try checkSecrets(arena, io, out, config, options.secrets_path orelse config.secrets orelse secrets.DEFAULT_PATH);
     if (options.remote) ok = try checkRemote(arena, io, out, config) and ok;
     return ok;
 }

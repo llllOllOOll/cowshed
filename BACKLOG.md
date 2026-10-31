@@ -25,8 +25,8 @@
 ## Second version
 
 - [ ] Accessories (database, Keycloak)
-- [ ] A small Kamal project moved, then OrbitX, last. Replacing kamal-proxy cuts
-      every app on that server for a moment: needs the owner's go-ahead per server
+- [ ] A small project moved, then OrbitX, last. Replacing another proxy on a server cuts
+      every app there for a moment: needs the owner's go-ahead per server
 
 ## Open
 
@@ -47,5 +47,5 @@
       in the remote port
 - [ ] HTTPS end to end: the e2e test runs plain HTTP
 - [ ] Requests under way across a switch: only read in the source
-- [ ] Where the orbitx-* projects without `.kamal/secrets` get their secrets
+- [ ] Where the orbitx-* projects without a secrets file get their secrets
 - [ ] How a game server reports "empty", for draining matches
