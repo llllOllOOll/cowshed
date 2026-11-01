@@ -131,6 +131,9 @@ fn render(arena: Allocator, facts: Facts) Allocator.Error![]const u8 {
         \\  # acme_email: me@example.com
         \\  healthcheck:
         \\    path: /up  # Must answer 2xx before it gets traffic
+        \\# What must outlive a version, such as a database file:
+        \\# volumes:
+        \\#   - /var/lib/{[service]s}:/data
         \\env:
         \\  clear:
         \\    # MODE: production

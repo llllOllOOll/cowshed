@@ -20,7 +20,7 @@ on a throwaway server; `setup` and `deploy` also on a real one, for one app.
 | `cowshed exec [--version V] CMD` | A one-off in a new container of a version, with the live one's variables, network and env file; its exit code decides. For migrations: OrbitX runs `SPIDER_MIGRATE=1 ./orbitx` before deploying |
 | `cowshed prune` | Keeps the last 3 stopped containers; removes the images, blobs and lists of every other version, failed deploys' too |
 | `cowshed stop` | Removes the route and stops what runs; containers stay, a `rollback` brings one back |
-| `cowshed remove --yes` | Route, containers, images and their files, for good. Without `--yes` it only lists them. Audit log, accessories and `replaces` stay |
+| `cowshed remove --yes` | Route, containers, images and their files, for good. Without `--yes` it only lists them. Audit log, accessories, `replaces` and what volumes hold stay |
 | `cowshed lock status / release` | The deploy lock |
 | `cowshed audit` | Who deployed what and when |
 | `cowshed accessory boot / stop / logs / exec NAME` | Long-lived services (database, Keycloak) |
@@ -135,6 +135,13 @@ What the source says this costs us, and what Cowshed does about it:
 | Same rule by label and by file: the labelled router kept winning | File routers carry a high `priority` |
 | A resolver is static config: a router naming an unknown one only logs an error | Read the resolvers first, refuse an unknown one |
 | The switch has no per-server connection count or drain signal | Count from the container's side (below) |
+
+## Volumes
+
+`volumes` mounts the same places in every version, rollback and one-off. The old
+version keeps serving until the new one is proven, but it shares these: its files are
+untouched only as far as the new version leaves them so. What they hold is the owner's,
+so no command removes it.
 
 ## Drain
 

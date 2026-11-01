@@ -60,6 +60,8 @@ env:
   secret:
     - TOKEN
     - OTHER:FROM_ENV_VAR
+volumes:
+  - /srv/e2e-data:/data
 deploy_timeout: 8
 drain_timeout: 3
 replaces: legacy
@@ -251,6 +253,31 @@ done
 cowshed rollback "$target" >/dev/null || fail "could not come back"
 [ "$(serving)" = seven ] || fail "not back"
 
+echo "== volumes and server-sent events, across a deploy and a rollback"
+cowshed exec sh -c 'echo kept > /data/mark' >/dev/null || fail "exec could not write the volume"
+was=$(inside docker ps --filter label=service=e2e --format '{{.Label "version"}}')
+commit streaming
+python3 "$ROOT/tests/sse.py" "$WEB_PORT" > "$WORK/sse" &
+sse=$!
+sleep 7 # Past the app's silence, longer than the route's idle timeout
+# Server-sent events through the same switch: streamed at once, kept through a
+# silence, on the old version until the drain ends them.
+cowshed deploy > "$WORK/out" || { cat "$WORK/out"; fail "the deploy failed"; }
+wait "$sse"
+cat "$WORK/sse"
+grep -q "first_s: 0\\." "$WORK/sse" || fail "the first event was held back"
+grep -q "silence_survived: True" "$WORK/sse" || fail "a silence cut the stream"
+grep -qx "versions: seven" "$WORK/sse" || fail "the stream moved to another version"
+grep -q "ended: True" "$WORK/sse" || fail "the stream outlived the old container"
+[ "$(serving)" = streaming ] || fail "not serving the new version"
+[ "$(result exec cat /data/mark)" = kept ] || fail "exec does not see the volume"
+now=$(inside docker ps --filter label=service=e2e --format '{{.Names}}')
+[ "$(inside docker exec "$now" cat /data/mark)" = kept ] || fail "the new version lost the volume"
+cowshed rollback "$was" > "$WORK/out" || { cat "$WORK/out"; fail "the rollback failed"; }
+now=$(inside docker ps --filter label=service=e2e --format '{{.Names}}')
+[ "$(inside docker exec "$now" cat /data/mark)" = kept ] || fail "the rollback lost the volume"
+[ "$(serving)" = seven ] || fail "not back on seven"
+
 echo "== remove: only with --yes"
 if cowshed remove > "$WORK/out"; then fail "removed without --yes"; fi
 [ "$(serving)" = seven ] || fail "removed without --yes"
@@ -259,5 +286,6 @@ cowshed remove --yes | tail -1
 [ -z "$(inside docker image ls -q e2e-app)" ] || fail "images left"
 inside docker inspect legacy >/dev/null || fail "legacy was removed"
 inside test -f /root/.cowshed/audit-e2e.log || fail "the audit log went too"
+[ "$(inside cat /srv/e2e-data/mark)" = kept ] || fail "the volume's data went too"
 
 echo "e2e passed"

@@ -76,6 +76,9 @@ role: []const u8 = DEFAULT_ROLE,
 host: []const u8,
 cmd: ?[]const u8 = null,
 labels: []const Pair = &.{},
+/// `/on/server:/in/container` or `name:/in/container`, with `:ro` and such after.
+/// What it holds is never Cowshed's: nothing here removes it.
+volumes: []const []const u8 = &.{},
 cpus: ?[]const u8 = null,
 memory: ?[]const u8 = null,
 env: Env = .{},
@@ -277,7 +280,7 @@ const Reader = struct {
             "service",        "image",         "servers",  "registry", "builder", "env",
             "proxy",          "ssh",           "boot",     "cpus",     "memory",  "accessories",
             "deploy_timeout", "drain_timeout", "replaces", "secrets",  "branch",  "secrets",
-            "sources",
+            "sources",        "volumes",
         });
 
         var config: Config = .{
@@ -290,6 +293,7 @@ const Reader = struct {
             .secrets = try self.string(root, "secrets", ""),
             .branch = try self.string(root, "branch", ""),
             .sources = try self.strings(root, "sources", ""),
+            .volumes = try self.strings(root, "volumes", ""),
             .env = try self.readEnv(root, ""),
             .proxy = try self.readProxy(root, ""),
             .deploy_timeout_s = try self.number(u32, root, "deploy_timeout", "", DEFAULT_DEPLOY_TIMEOUT_S),
@@ -297,6 +301,15 @@ const Reader = struct {
         };
         try self.readServers(root, &config);
         try self.checkNames(root, config);
+        if (root.get("volumes")) |entry| {
+            if (entry.value == .list) {
+                for (entry.value.list, 0..) |item, i| {
+                    if (i < config.volumes.len and !isVolume(config.volumes[i])) {
+                        try self.problem(item.line, "a volume is `/on/server:/in/container` or `name:/in/container`, with `:ro`, `:rw`, `:z` or `:Z` after: `{s}`", .{config.volumes[i]});
+                    }
+                }
+            }
+        }
 
         if (root.get("ssh")) |ssh| {
             try self.checkKeys(ssh.value, ssh.line, "ssh", &.{ "user", "port", "keys" });
@@ -406,6 +419,27 @@ const Reader = struct {
 /// Whether a deploy builds from clean copies, rather than this folder as it is.
 pub fn cleanCopy(self: Config) bool {
     return self.branch != null or self.sources.len > 0;
+}
+
+/// Both sides are required: a container path alone would be a volume no version
+/// finds again. A relative path or `~` would not mean what it seems on the server.
+fn isVolume(text: []const u8) bool {
+    var parts = std.mem.splitScalar(u8, text, ':');
+    const source = parts.next().?;
+    const target = parts.next() orelse return false;
+    if (source.len == 0 or target.len < 2 or target[0] != '/') return false;
+    if (source[0] != '/' and !isSafeName(source)) return false;
+    if (source[0] == '.') return false;
+    if (parts.next()) |options| {
+        if (parts.next() != null) return false;
+        var each = std.mem.splitScalar(u8, options, ',');
+        while (each.next()) |option| {
+            for ([_][]const u8{ "ro", "rw", "z", "Z" }) |known| {
+                if (std.mem.eql(u8, option, known)) break;
+            } else return false;
+        }
+    }
+    return true;
 }
 
 pub fn isSafeName(name: []const u8) bool {
@@ -528,6 +562,22 @@ test "an env without clear or secret is all clear" {
     try testing.expectEqualStrings("1", config.env.clear[0].value);
 }
 
+test "volumes" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var problems: std.ArrayList(Problem) = .empty;
+    const config = try parse(arena.allocator(), MINIMAL ++ "volumes:\n  - /srv/a b:/data\n  - named:/data2:ro\n  - /x:/y:ro,Z\n", &problems);
+    try testing.expectEqual(3, config.volumes.len);
+    try testing.expectEqualStrings("/srv/a b:/data", config.volumes[0]);
+    for ([_][]const u8{ "/data", "./a:/data", "~/a:/data", "../a:/data", "a/b:/data", ":/data", "/a:data", "/a:/", "/a:/b:nope", "/a:/b:ro:z" }) |bad| {
+        const source = try std.fmt.allocPrint(arena.allocator(), MINIMAL ++ "volumes:\n  - \"{s}\"\n", .{bad});
+        problems = .empty;
+        try testing.expectError(error.InvalidConfig, parse(arena.allocator(), source, &problems));
+        try testing.expect(std.mem.indexOf(u8, problems.items[0].message, "a volume is") != null);
+    }
+    try expectProblem(MINIMAL ++ "volumes: /a:/b\n", "`.volumes` must be a list");
+}
+
 test "an accessory" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -553,7 +603,7 @@ test "an accessory" {
 }
 
 test "an unknown option is refused by its whole name" {
-    try expectProblem(MINIMAL ++ "volumes:\n  - a\n", "unknown option `volumes`");
+    try expectProblem(MINIMAL ++ "nope:\n  - a\n", "unknown option `nope`");
     try expectProblem(MINIMAL ++ "proxy:\n  host: a\n  buffering: 1\n", "unknown option `proxy.buffering`");
     try expectProblem(MINIMAL ++ "proxy:\n  host: a\n  healthcheck:\n    cmd: x\n", "unknown option `proxy.healthcheck.cmd`");
     try expectProblem("service: a\nimage: b\nservers:\n  web:\n    hosts:\n      - h\n    options: 1\n", "unknown option `servers.web.options`");

@@ -49,10 +49,15 @@ pub const AppContainer = struct {
     env_file: ?[]const u8 = null,
     clear_env: []const Pair = &.{},
     labels: []const Pair = &.{},
+    volumes: []const []const u8 = &.{},
     cmd: ?[]const u8 = null,
 };
 
 pub const Pair = @import("../config/Config.zig").Pair;
+
+pub fn appendVolumes(arena: Allocator, argv: *std.ArrayList([]const u8), volumes: []const []const u8) Allocator.Error!void {
+    for (volumes) |volume| try argv.appendSlice(arena, &.{ "--volume", volume });
+}
 
 /// Clear variables are on this line, in the open, as they are in the config.
 /// Secrets arrive only through `env_file`.
@@ -77,6 +82,7 @@ pub fn runApp(arena: Allocator, app: AppContainer) Allocator.Error![]const []con
         try argv.appendSlice(arena, &.{ "--env", try std.fmt.allocPrint(arena, "{s}={s}", .{ env.name, env.value }) });
     }
     if (app.env_file) |path| try argv.appendSlice(arena, &.{ "--env-file", path });
+    try appendVolumes(arena, &argv, app.volumes);
     try argv.append(arena, app.image);
     if (app.cmd) |cmd| try appendWords(arena, &argv, cmd);
     return argv.items;
@@ -146,12 +152,13 @@ test "a container's command: labels, limits, env, and its words whole" {
         .memory = "2g",
         .env_file = "/e",
         .clear_env = &.{.{ .name = "A", .value = "b c" }},
+        .volumes = &.{ "/srv/a b:/data", "n:/m:ro" },
         .cmd = "--nearest 24 --name \"two words\"\n--empty ''",
     });
     const line = try std.mem.join(a, "|", argv);
     try testing.expect(std.mem.indexOf(u8, line, "--name|s-web-1|--restart|unless-stopped|--network|net|--memory|2g") != null);
     try testing.expect(std.mem.indexOf(u8, line, "--label|version=1") != null);
-    try testing.expect(std.mem.indexOf(u8, line, "--env|A=b c|--env-file|/e|s:1|--nearest|24|--name|two words|--empty|") != null);
+    try testing.expect(std.mem.indexOf(u8, line, "--env|A=b c|--env-file|/e|--volume|/srv/a b:/data|--volume|n:/m:ro|s:1|--nearest|24|--name|two words|--empty|") != null);
     try testing.expectEqualStrings("", argv[argv.len - 1]);
 }
 

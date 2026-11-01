@@ -123,6 +123,7 @@ pub fn exec(arena: Allocator, remote: Remote, out: *Writer, config: Config, vers
     } else if (config.env.secret.len > 0) {
         try out.writeAll("notice: nothing is live, so this runs without the app's secrets\n");
     }
+    try docker.appendVolumes(arena, &argv, config.volumes);
     try argv.append(arena, image);
     try argv.appendSlice(arena, command);
 
@@ -160,13 +161,14 @@ pub fn stop(arena: Allocator, remote: Remote, out: *Writer, config: Config, who:
     return ok;
 }
 
-/// For good: route, containers, images and their files. Accessories, the audit log
-/// and a container named in `replaces` stay. Without `confirmed` it only tells.
+/// For good: route, containers, images and their files. Accessories, the audit log,
+/// a container named in `replaces` and what volumes hold stay. Without `confirmed` it only tells.
 pub fn remove(arena: Allocator, remote: Remote, out: *Writer, config: Config, who: []const u8, confirmed: bool) Error!bool {
     const rows = try list(arena, remote, out, config) orelse return false;
     if (!confirmed) {
         try out.print("this removes {s} from {s}, its route and these {d} containers, and cannot be undone:\n", .{ config.service, config.host, rows.len });
         for (rows) |row| try out.print("  {s} ({s})\n", .{ row.name, row.state });
+        for (config.volumes) |volume| try out.print("  the volume {s} stays, with what it holds\n", .{volume});
         try out.writeAll("run it again with `--yes`\n");
         return false;
     }
@@ -192,6 +194,7 @@ pub fn remove(arena: Allocator, remote: Remote, out: *Writer, config: Config, wh
         }
     }
     _ = try remote.run(arena, .{ .argv = &.{ "sh", "-c", REMOVE_FILES, "sh", config.service } });
+    for (config.volumes) |volume| try out.print("kept the volume {s}\n", .{volume});
     try out.writeAll("removed\n");
     return true;
 }
@@ -270,10 +273,11 @@ test "exec: the live version, its env file, its words whole, its exit code" {
     try h.on("$HOME/.cowshed/env/$1", 0, "/home/u/.cowshed/env/app-web-v2");
     var config = CONFIG;
     config.env = .{ .clear = &.{.{ .name = "A", .value = "1" }} };
+    config.volumes = &.{"/srv/d:/data"};
     const a = h.arena.allocator();
     try testing.expect(try exec(a, h.fake.remote(), &h.output.writer, config, null, &.{ "./migrate", "--to", "two words" }));
     try testing.expect(h.fake.ran("docker run --rm"));
-    try testing.expect(h.fake.ran("--env A=1 --env-file /home/u/.cowshed/env/app-web-v2 app:v2 ./migrate --to two words"));
+    try testing.expect(h.fake.ran("--env A=1 --env-file /home/u/.cowshed/env/app-web-v2 --volume /srv/d:/data app:v2 ./migrate --to two words"));
     try h.on("docker run --rm", 3, "");
     try testing.expect(!try exec(a, h.fake.remote(), &h.output.writer, config, "v1", &.{"x"}));
     try testing.expect(h.fake.ran("app:v1 x"));

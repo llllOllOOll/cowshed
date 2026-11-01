@@ -40,6 +40,9 @@ builder:
   context: .              # By default
   dockerfile: Dockerfile  # By default
   arch: arm64             # Optional
+volumes:                  # Optional: what must outlive a version
+  - /var/lib/my-app:/data   # A path on the server, or a Docker volume's name
+  - shared:/shared:ro       # Then `:ro`, `:rw`, `:z` or `:Z`, if needed
 cpus: 2                   # Optional limits
 memory: 1g
 deploy_timeout: 30        # Seconds for the new version to prove healthy
@@ -49,6 +52,14 @@ replaces: old-container   # Optional: from before Cowshed; stopped, never remove
 
 A list of hosts can stand directly under `servers`, and a plain map under `env` is all
 clear variables. `registry` and `boot` are read and ignored, with a notice.
+
+## Volumes
+
+Every version, a rollback and `cowshed exec` see the same volumes. A missing path is made
+by Docker, as root, so an app running as another user needs it prepared. Cowshed copies
+nothing into them, and `remove` leaves them. During a switch the old and the new version
+use them together, for up to `drain_timeout` seconds: a database file must allow that,
+and a migration on start reaches the old version's data even if the new one then fails.
 
 ## A project among others, or using other repositories
 

@@ -22,6 +22,8 @@
       nothing changed, what it was made from on the container and in the audit log
       (`tests/monorepo_e2e.sh`)
 
+- [x] `volumes` on the app: every version, rollback and `exec`; `remove` leaves them.
+      Server-sent events tested through a switch (`tests/deploy_e2e.sh`)
 - [x] `cowshed init`: a project's config and secrets file
 - [x] A Traefik set up by a YAML settings file is read, its contents never shown
       (`tests/setup_e2e.sh`)

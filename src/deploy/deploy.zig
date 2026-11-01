@@ -212,6 +212,7 @@ fn deployLocked(self: Run, traefik: ?detect.Traefik) Error!bool {
         .env_file = env_file,
         .clear_env = config.env.clear,
         .labels = config.labels,
+        .volumes = config.volumes,
         .cmd = config.cmd,
     }));
     if (!started.ok()) {
