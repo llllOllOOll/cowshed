@@ -198,6 +198,13 @@ fn deployLocked(self: Run, traefik: ?detect.Traefik) Error!bool {
         env_file = try writeEnvFile(self, name) orelse return false;
     }
 
+    if (config.migrate) |migrate| {
+        if (!try runMigration(self, migrate, name, env_file, traefik)) {
+            _ = try self.ask(&.{ "sh", "-c", DELETE_ENV_FILE, "sh", name });
+            return false;
+        }
+    }
+
     try self.say("container: starting {s}", .{name});
     const started = try self.ask(try docker.runApp(self.arena, .{
         .name = name,
@@ -238,6 +245,41 @@ fn deployLocked(self: Run, traefik: ?detect.Traefik) Error!bool {
     try self.say("prune: cleaning old versions", .{});
     try prune(self);
     try self.say("deployed {s}", .{version});
+    return true;
+}
+
+/// Before the new version exists: if it fails, nothing has changed but what the
+/// migration itself did.
+fn runMigration(self: Run, migrate: Config.Migrate, name: []const u8, env_file: ?[]const u8, traefik: ?detect.Traefik) Error!bool {
+    const config = self.config();
+    const container = try std.fmt.allocPrint(self.arena, "{s}-migrate", .{name});
+    try self.say("migrate: running `{s}` from {s}, up to {d} s; its output comes at the end", .{ migrate.command, self.input.version, migrate.timeout_s });
+    const result = try self.ask(try docker.runMigration(self.arena, .{
+        .name = container,
+        .image = try std.fmt.allocPrint(self.arena, "{s}:{s}", .{ config.image, self.input.version }),
+        .service = config.service,
+        .command = migrate.command,
+        .timeout_s = migrate.timeout_s,
+        .network = if (traefik) |found| found.network else null,
+        .cpus = config.cpus,
+        .memory = config.memory,
+        .env_file = env_file,
+        .clear_env = config.env.clear,
+        .env = migrate.env,
+        .volumes = config.volumes,
+    }));
+    try self.out.writeAll(result.stdout);
+    try self.out.writeAll(result.stderr);
+    if (result.exit_code == docker.MIGRATION_TIMED_OUT) {
+        try self.audit("migration stopped: time is up");
+        return self.stop("the migration passed its {d} s and was stopped, perhaps half done: the old version keeps serving. Look at the data before trying again", .{migrate.timeout_s});
+    }
+    if (!result.ok()) {
+        try self.audit("migration failed");
+        return self.stop("the migration failed with exit code {d}: the old version keeps serving. What it did before failing stays", .{result.exit_code});
+    }
+    try self.audit("migrated");
+    try self.say("migrate: done", .{});
     return true;
 }
 
@@ -713,6 +755,60 @@ test "the order: lock, image, container, health, route, confirm, stop the old, u
     try testing.expect(h.fake.ran("http://app-web-v2:80/up"));
     try testing.expect(!h.fake.ran("docker stop app-web-v2"));
     try h.says("deployed v2");
+}
+
+test "a migration: new image, after sending, before the new version, with the app's settings" {
+    var h = harness();
+    defer h.arena.deinit();
+    try h.begin();
+    try h.on("umask 077", 0, "/home/u/.cowshed/env/app-web-v2");
+    try h.on("sh 60 app-web-v2-migrate docker run", 0, "2 applied\n");
+    var config = PROXIED;
+    config.migrate = .{ .command = "./app \"two words\"", .env = &.{.{ .name = "MIGRATE", .value = "1" }}, .timeout_s = 60 };
+    config.volumes = &.{"/srv:/data"};
+    try testing.expect(try h.deploy(config));
+    try h.before("umask 077", "sh 60 app-web-v2-migrate docker run");
+    try h.before("sh 60 app-web-v2-migrate docker run", "docker run -d");
+    const line = h.fake.calls.items[h.fake.position("sh 60 app-web-v2-migrate docker run").?].line;
+    for ([_][]const u8{ "--rm", "--env MIGRATE=1", "--env-file /home/u/.cowshed/env/app-web-v2", "--volume /srv:/data", "--network" }) |part| {
+        try testing.expect(std.mem.indexOf(u8, line, part) != null);
+    }
+    // No version to be listed, pruned or taken for the live one.
+    try testing.expect(std.mem.indexOf(u8, line, "service=") == null);
+    try h.says("2 applied");
+    try h.says("migrate: done");
+    try testing.expect(h.fake.ran("migrated"));
+}
+
+test "a migration that fails: no new version, and the old one untouched" {
+    var h = harness();
+    defer h.arena.deinit();
+    try h.begin();
+    try h.on("umask 077", 0, "/home/u/.cowshed/env/app-web-v2");
+    try h.on("sh 300 app-web-v2-migrate docker run", 3, "bad column\n");
+    var config = PROXIED;
+    config.migrate = .{ .command = "./app" };
+    try testing.expect(!try h.deploy(config));
+    try testing.expect(!h.fake.ran("docker run -d"));
+    try testing.expect(!h.fake.ran("mv \"$1/.$2.tmp\""));
+    try testing.expect(!h.fake.ran("docker stop app-web-v1"));
+    try testing.expect(h.fake.ran("rm -f \"$HOME/.cowshed/env/$1\""));
+    try testing.expect(h.fake.ran("rm -rf \"$HOME/.cowshed/locks/$1\""));
+    try h.says("bad column");
+    try h.says("exit code 3: the old version keeps serving");
+    try testing.expect(h.fake.ran("migration failed"));
+}
+
+test "a migration past its time: stopped and removed, the old one untouched" {
+    var h = harness();
+    defer h.arena.deinit();
+    try h.begin();
+    try h.on("sh 300 app-web-v2-migrate docker run", 124, "");
+    var config = PROXIED;
+    config.migrate = .{ .command = "./app" };
+    try testing.expect(!try h.deploy(config));
+    try testing.expect(!h.fake.ran("docker run -d"));
+    try h.says("perhaps half done");
 }
 
 test "what it was made from: on the container, in the log, and seen as live" {

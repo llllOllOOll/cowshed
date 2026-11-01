@@ -78,7 +78,9 @@ how far along it is every 5 s.
    inside. Released on failure too. The build runs before it.
 4. Get the image to the server (below).
 5. Write the env file for this version on the server, mode 0600; secrets never
-   go on a command line.
+   go on a command line. With `migrate` set, run it now, once, in a throwaway container
+   of the new image: a failure or the end of its time stops the deploy here, before
+   any new version exists. What it did to the data is not undone.
 6. Run `<service>-<role>-<version>` beside the old one, on the shared network,
    with `--restart unless-stopped`. If that version's name already exists, rename
    the old container first.

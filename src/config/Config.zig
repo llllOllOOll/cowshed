@@ -15,6 +15,7 @@ const DEFAULT_HEALTH_INTERVAL_S = 1;
 const DEFAULT_HEALTH_TIMEOUT_S = 5;
 const DEFAULT_DEPLOY_TIMEOUT_S = 30;
 const DEFAULT_DRAIN_TIMEOUT_S = 30;
+const DEFAULT_MIGRATE_TIMEOUT_S = 300;
 const DEFAULT_CONTEXT = ".";
 const DEFAULT_DOCKERFILE = "Dockerfile";
 
@@ -57,6 +58,14 @@ pub const Builder = struct {
     before: ?[]const u8 = null,
 };
 
+/// Run once for each deploy, from the new image, before the new version starts.
+pub const Migrate = struct {
+    command: []const u8,
+    /// Only for this command, above the app's own variables.
+    env: []const Pair = &.{},
+    timeout_s: u32 = DEFAULT_MIGRATE_TIMEOUT_S,
+};
+
 pub const Accessory = struct {
     name: []const u8,
     image: []const u8,
@@ -83,6 +92,7 @@ cpus: ?[]const u8 = null,
 memory: ?[]const u8 = null,
 env: Env = .{},
 proxy: ?Proxy = null,
+migrate: ?Migrate = null,
 ssh: Ssh = .{},
 builder: Builder = .{},
 deploy_timeout_s: u32 = DEFAULT_DEPLOY_TIMEOUT_S,
@@ -234,6 +244,17 @@ const Reader = struct {
         return env;
     }
 
+    fn readMigrate(self: *Reader, root: yaml.Value) Allocator.Error!?Migrate {
+        const entry = root.get("migrate") orelse return null;
+        try self.checkKeys(entry.value, entry.line, "migrate", &.{ "command", "env", "timeout" });
+        if (entry.value != .map) return null;
+        const timeout_s = try self.number(u32, entry.value, "timeout", "migrate", DEFAULT_MIGRATE_TIMEOUT_S);
+        if (timeout_s == 0) try self.problem(entry.line, "`migrate.timeout` must be above 0", .{});
+        var migrate: Migrate = .{ .command = try self.required(entry.value, "command", "migrate", entry.line), .timeout_s = timeout_s };
+        if (entry.value.get("env")) |env| migrate.env = try self.pairs(env.value, env.line, "migrate.env");
+        return migrate;
+    }
+
     fn readProxy(self: *Reader, parent: yaml.Value, path: []const u8) Allocator.Error!?Proxy {
         const entry = parent.get("proxy") orelse return null;
         const value = entry.value;
@@ -282,7 +303,7 @@ const Reader = struct {
             "service",        "image",         "servers",  "registry", "builder", "env",
             "proxy",          "ssh",           "boot",     "cpus",     "memory",  "accessories",
             "deploy_timeout", "drain_timeout", "replaces", "secrets",  "branch",  "secrets",
-            "sources",        "volumes",       "env_file",
+            "sources",        "volumes",       "env_file", "migrate",
         });
 
         var config: Config = .{
@@ -299,6 +320,7 @@ const Reader = struct {
             .volumes = try self.strings(root, "volumes", ""),
             .env = try self.readEnv(root, ""),
             .proxy = try self.readProxy(root, ""),
+            .migrate = try self.readMigrate(root),
             .deploy_timeout_s = try self.number(u32, root, "deploy_timeout", "", DEFAULT_DEPLOY_TIMEOUT_S),
             .drain_timeout_s = try self.number(u32, root, "drain_timeout", "", DEFAULT_DRAIN_TIMEOUT_S),
         };
@@ -641,4 +663,18 @@ test "bad YAML reaches the problems with its line" {
     var problems: std.ArrayList(Problem) = .empty;
     try testing.expectError(error.InvalidConfig, parse(arena.allocator(), "service: a\nb: &x 1\n", &problems));
     try testing.expectEqual(2, problems.items[0].line);
+}
+
+test "migrate: its command, variables and limit, and what it refuses" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var problems: std.ArrayList(Problem) = .empty;
+    const config = try parse(a, MINIMAL ++ "migrate:\n  command: ./app\n  env:\n    MIGRATE: \"1\"\n  timeout: 60\n", &problems);
+    try testing.expectEqualStrings("./app", config.migrate.?.command);
+    try testing.expectEqualStrings("MIGRATE", config.migrate.?.env[0].name);
+    try testing.expectEqual(60, config.migrate.?.timeout_s);
+    try expectProblem(MINIMAL ++ "migrate:\n  env:\n    A: b\n", "`migrate.command` is required");
+    try expectProblem(MINIMAL ++ "migrate:\n  command: a\n  nope: 1\n", "unknown option `migrate.nope`");
+    try expectProblem(MINIMAL ++ "migrate:\n  command: a\n  timeout: 0\n", "`migrate.timeout` must be above 0");
 }

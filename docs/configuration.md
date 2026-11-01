@@ -36,6 +36,11 @@ env:
     - DB_PASSWORD:PG_PASS # Seen as DB_PASSWORD, read from PG_PASS
 secrets: .cowshed/secrets # By default
 env_file: ~/.my_secrets   # Optional: variables the secrets file reads
+migrate:                  # Optional: runs before each new version
+  command: ./my-app       # Replaces the image's CMD
+  env:
+    MIGRATE: "1"          # Only for this command
+  timeout: 300            # Seconds, by default
 builder:
   before: tools/stage.sh  # Optional: run first, with COWSHED_VERSION set
   context: .              # By default
@@ -64,6 +69,17 @@ use them together, for up to `drain_timeout` seconds: a database file must allow
 and a migration on start reaches the old version's data even if the new one then fails.
 A rollback changes the code, not what volumes hold. [Usage](usage.md#data-that-must-outlive-a-version)
 covers a first copy and backups.
+
+## Migrations
+
+`migrate.command` runs on every deploy, once, in a container of the new image, after it reaches
+the server and before the new version starts. It has the app's variables, secrets, network and
+volumes, and `migrate.env` on top of them; the app never sees those. A command with nothing to do
+should end at once. Anything but exit code 0 stops the deploy, with the old version serving. Its
+output comes when it ends. A rollback runs nothing.
+
+Keep a variable that makes the app migrate and exit in `migrate.env`, never in `env`: the app
+would exit instead of serving.
 
 ## What goes into the image
 

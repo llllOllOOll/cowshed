@@ -115,7 +115,7 @@ prepared with `chown`. Copy a database from a consistent backup, not from the fi
 in use: SQLite in WAL mode, for one, keeps recent changes in `-wal` and `-shm` files beside
 the main one.
 
-**Back up before a deploy that migrates.** A migration on start changes the old version's
+**Back up before a deploy that migrates.** A migration changes the old version's
 data too, even if the new version then fails. The app's own backup command can run with the
 live version's settings and volumes, and the copy be taken off the server:
 
@@ -130,6 +130,34 @@ this order: `cowshed stop`; on the server, replace the database file and delete 
 and `-shm` files; `cowshed rollback <version>` to the version that matches the backup. All that was written after
 the backup is lost, and whatever else in the volume goes with the database, such as uploaded
 files, must return with it.
+
+## Migrations
+
+Set `migrate` in `config/deploy.yml`, and every deploy runs it, from the new image, before the new
+version starts:
+
+```yaml
+migrate:
+  command: ./my-app
+  env:
+    MIGRATE: "1"
+```
+
+**Take a backup first,** yourself: Cowshed does not know your database. Then deploy, once:
+
+```bash
+ssh root@my-server 'my-backup-command'
+cowshed deploy
+```
+
+- **It fails:** the old version keeps serving. What the migration did before failing stays, unless
+  it undoes itself. Read its output, shown when it ends.
+- **It passes and the new version then fails its health check:** the old version keeps serving on
+  the new schema, so a migration must be one the old version can live with until the switch. One
+  it cannot needs a window the people using the app know about.
+- **It passes its `timeout`:** it is stopped, perhaps half done. Raise the limit if it was only
+  slow, and look at the data before trying again.
+- **Going back:** a rollback runs no migration, and the data stays as it is.
 
 ## Running one command
 
@@ -264,7 +292,7 @@ leaves the old version serving.
 - One server and one role per project.
 - Proven on a real server: `proxy adopt`, a first certificate, a deploy with a volume, a second
   deploy and a rollback.
-- Not yet proven on a real server: server-sent events over HTTPS, a deploy that migrates, and
+- Not yet proven on a real server: server-sent events over HTTPS, `migrate`, and
   `proxy adopt` putting things back by itself after the cut, which has run only against a fake.
 
 ## For a coding agent

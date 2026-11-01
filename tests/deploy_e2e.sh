@@ -318,4 +318,34 @@ rm "$env_config"
 cowshed remove --yes > /dev/null
 [ "$(inside cat /srv/e2e-data/mark)" = kept ] || fail "the volume's data went too"
 
+echo "== migrate: before the new version, and a failure leaves the old one"
+cowshed deploy --force > "$WORK/out" || { cat "$WORK/out"; fail "the deploy before migrating failed"; }
+old=$(inside docker ps --filter label=service=e2e --format '{{.Names}}')
+inside rm -f /srv/e2e-data/migrated
+migrate_config="$APP/config/migrate.yml"
+with_migrate() {
+	{ cat "$APP/config/deploy.yml"; printf 'migrate:\n  command: sh -c \x27echo "$STEP" >> /data/migrated; test -n "$TOKEN"; test "$STEP" = ok\x27\n  timeout: %s\n  env:\n    STEP: %s\n' "$2" "$1"; } > "$migrate_config"
+}
+with_migrate bad 30
+if cowshed deploy --force -c "$migrate_config" > "$WORK/out"; then fail "deployed past a failed migration"; fi
+grep -q "the old version keeps serving" "$WORK/out" || fail "wrong reason: $(cat "$WORK/out")"
+[ "$(inside docker ps --filter label=service=e2e --format '{{.Names}}')" = "$old" ] || fail "a failed migration changed what runs"
+inside grep -qx bad /srv/e2e-data/migrated || fail "the migration did not reach the volume"
+[ -z "$(inside docker ps -aq --filter label=oneoff=e2e)" ] || fail "the migration's container stayed"
+
+{ cat "$APP/config/deploy.yml"; printf 'migrate:\n  command: sleep 60\n  timeout: 2\n'; } > "$migrate_config"
+if cowshed deploy --force -c "$migrate_config" > "$WORK/out"; then fail "deployed past a migration out of time"; fi
+grep -q "perhaps half done" "$WORK/out" || fail "wrong reason: $(cat "$WORK/out")"
+[ "$(inside docker ps --filter label=service=e2e --format '{{.Names}}')" = "$old" ] || fail "a late migration changed what runs"
+[ -z "$(inside docker ps -aq --filter label=oneoff=e2e)" ] || fail "the late migration's container stayed"
+
+with_migrate ok 30
+cowshed deploy --force -c "$migrate_config" > "$WORK/out" || { cat "$WORK/out"; fail "the deploy with a migration failed"; }
+inside grep -qx ok /srv/e2e-data/migrated || fail "the migration did not run"
+[ "$(inside docker ps --filter label=service=e2e --format '{{.Names}}')" != "$old" ] || fail "the new version did not go live"
+if result exec printenv STEP >/dev/null 2>&1; then fail "the migration's variable reached the app"; fi
+grep -q hidden "$WORK/out" && fail "a secret in the output"
+rm "$migrate_config"
+cowshed remove --yes > /dev/null
+
 echo "e2e passed"

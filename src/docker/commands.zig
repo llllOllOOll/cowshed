@@ -88,6 +88,58 @@ pub fn runApp(arena: Allocator, app: AppContainer) Allocator.Error![]const []con
     return argv.items;
 }
 
+pub const Migration = struct {
+    name: []const u8,
+    image: []const u8,
+    service: []const u8,
+    command: []const u8,
+    timeout_s: u32,
+    network: ?[]const u8 = null,
+    cpus: ?[]const u8 = null,
+    memory: ?[]const u8 = null,
+    env_file: ?[]const u8 = null,
+    clear_env: []const Pair = &.{},
+    /// Its own variables: `--env` wins over the app's and over the env file.
+    env: []const Pair = &.{},
+    volumes: []const []const u8 = &.{},
+};
+
+pub const MIGRATION_TIMED_OUT = 124;
+
+/// `timeout` would only signal the client, and what ignores a signal in a container goes
+/// on: when the time is up, the container itself is removed. `$1` the limit, `$2` its
+/// name, then the command.
+const WITHIN_LIMIT =
+    \\limit=$1; name=$2; shift 2
+    \\flag=$(mktemp) && rm -f "$flag" || exit 1
+    \\(sleep "$limit"; : > "$flag"; docker rm -f "$name") >/dev/null 2>&1 &
+    \\watcher=$!
+    \\"$@"; code=$?
+    \\kill "$watcher" 2>/dev/null
+    \\if [ -e "$flag" ]; then rm -f "$flag"; exit 124; fi
+    \\exit "$code"
+;
+
+/// Attached, so its exit code is the command's. No `service` label: it is no version.
+pub fn runMigration(arena: Allocator, migration: Migration) Allocator.Error![]const []const u8 {
+    var argv: std.ArrayList([]const u8) = .empty;
+    try argv.appendSlice(arena, &.{ "sh", "-c", WITHIN_LIMIT, "sh", try std.fmt.allocPrint(arena, "{d}", .{migration.timeout_s}), migration.name, "docker", "run", "--rm", "--name", migration.name, "--label", try std.fmt.allocPrint(arena, "oneoff={s}", .{migration.service}) });
+    if (migration.network) |network| try argv.appendSlice(arena, &.{ "--network", network });
+    if (migration.cpus) |cpus| try argv.appendSlice(arena, &.{ "--cpus", cpus });
+    if (migration.memory) |memory| try argv.appendSlice(arena, &.{ "--memory", memory });
+    for (migration.clear_env) |env| {
+        try argv.appendSlice(arena, &.{ "--env", try std.fmt.allocPrint(arena, "{s}={s}", .{ env.name, env.value }) });
+    }
+    if (migration.env_file) |path| try argv.appendSlice(arena, &.{ "--env-file", path });
+    for (migration.env) |env| {
+        try argv.appendSlice(arena, &.{ "--env", try std.fmt.allocPrint(arena, "{s}={s}", .{ env.name, env.value }) });
+    }
+    try appendVolumes(arena, &argv, migration.volumes);
+    try argv.append(arena, migration.image);
+    try appendWords(arena, &argv, migration.command);
+    return argv.items;
+}
+
 /// Splits on spaces and newlines, keeping what is in quotes together.
 fn appendWords(arena: Allocator, argv: *std.ArrayList([]const u8), text: []const u8) Allocator.Error!void {
     var word: std.ArrayList(u8) = .empty;

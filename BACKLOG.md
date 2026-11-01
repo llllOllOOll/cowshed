@@ -25,6 +25,8 @@
 - [x] Every deploy builds from a clean copy of what is committed, not only with `branch` or
       `sources`. Before, a new file or one git ignores, such as `.env`, could enter an image
       unseen
+- [x] `migrate`: once for each deploy, from the new image, before the new version starts; a
+      failure or the end of its time stops the deploy (`tests/deploy_e2e.sh`). Not yet real
 - [x] A second app in production, beside others on a shared server (2026-11-01): adopting,
       certificate, volume, a second deploy and a rollback, from `docs/usage.md` alone
 - [x] Traefik's API answers only inside its container, when Cowshed turns it on or starts it
@@ -79,6 +81,10 @@
       issued them through a file route
 - [ ] A Traefik set up by a TOML file or its environment: `setup` stops, read them
 - [ ] A routes folder not writable from inside Traefik: the helper container
+- [ ] A migration's output comes at its end: showing it as it runs needs streaming in the remote
+      port. A connection lost during one leaves it running, with no one told how it ended
+- [ ] What OrbitX needs besides `migrate`: its database's network alias and accessories, and a way
+      to leave its current proxy
 - [ ] Hooks for games: `pre_switch`, `post_switch`. `builder.before` covers the check before sending
 - [ ] `logs` and `exec` give their output at the end: following logs needs streaming
       in the remote port
