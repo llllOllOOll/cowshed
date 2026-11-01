@@ -44,8 +44,18 @@ const Line = struct {
     raw: []const u8,
 };
 
+pub const Options = struct {
+    /// For a file that is not ours, such as Traefik's: a flow collection stays as
+    /// its text, and a `---` may open the file. Only what is read must be understood.
+    foreign: bool = false,
+};
+
 /// Everything returned lives in `arena`. On `error.InvalidYaml`, `failure` says why.
 pub fn parse(arena: Allocator, source: []const u8, failure: *Failure) (Allocator.Error || error{InvalidYaml})!Value {
+    return parseWith(arena, source, failure, .{});
+}
+
+pub fn parseWith(arena: Allocator, source: []const u8, failure: *Failure, options: Options) (Allocator.Error || error{InvalidYaml})!Value {
     var lines: std.ArrayList(Line) = .empty;
     var it = std.mem.splitScalar(u8, source, '\n');
     var number: u32 = 1;
@@ -59,7 +69,14 @@ pub fn parse(arena: Allocator, source: []const u8, failure: *Failure) (Allocator
             .raw = raw,
         });
     }
-    var parser: Parser = .{ .arena = arena, .lines = lines.items, .failure = failure };
+    if (options.foreign) {
+        for (lines.items) |*line| {
+            if (line.text.len == 0) continue;
+            if (std.mem.eql(u8, line.text, "---")) line.text = "";
+            break;
+        }
+    }
+    var parser: Parser = .{ .arena = arena, .lines = lines.items, .failure = failure, .keep_flow = options.foreign };
     try parser.checkUnsupported();
     if (!parser.skipToContent()) return .none;
     const root = parser.lines[parser.index].indent;
@@ -94,6 +111,7 @@ const Parser = struct {
     arena: Allocator,
     lines: []Line,
     failure: *Failure,
+    keep_flow: bool = false,
     index: usize = 0,
 
     fn fail(self: *Parser, line: u32, message: []const u8) error{InvalidYaml} {
@@ -230,6 +248,7 @@ const Parser = struct {
         switch (text[0]) {
             '&', '*' => return self.fail(number, "anchors and aliases are not supported"),
             '[', '{' => {
+                if (self.keep_flow) return text;
                 if (text.len == 2 and (text[1] == ']' or text[1] == '}')) return self.fail(number, "write an empty collection as no value");
                 return self.fail(number, "flow collections are not supported: use a block");
             },
@@ -399,6 +418,17 @@ test "what is not supported is refused by line" {
     try expectFailure("just text\n", 1, "expected `key: value`");
     try expectFailure("a: \"open\n", 1, "unterminated quote");
     try expectFailure("\ta: 1\n", 1, "tabs are not allowed for indentation");
+}
+
+test "a foreign file: its flow collections stay text, and `---` may open it" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var failure: Failure = undefined;
+    const value = try parseWith(arena.allocator(), "# top\n---\na: [1, 2]\nb: {}\n", &failure, .{ .foreign = true });
+    try testing.expectEqualStrings("[1, 2]", value.get("a").?.value.scalar);
+    try testing.expectEqualStrings("{}", value.get("b").?.value.scalar);
+    try testing.expectError(error.InvalidYaml, parseWith(arena.allocator(), "a: 1\n---\nb: 2\n", &failure, .{ .foreign = true }));
+    try testing.expectError(error.InvalidYaml, parseWith(arena.allocator(), "a: &x 1\n", &failure, .{ .foreign = true }));
 }
 
 test "ERB in a comment is fine" {

@@ -17,6 +17,7 @@ pub fn main(init: std.process.Init) !void {
 
 test {
     _ = cli;
+    _ = @import("cli/init.zig");
     _ = @import("cli/check.zig");
     _ = @import("cli/setup.zig");
     _ = @import("cli/deploy.zig");

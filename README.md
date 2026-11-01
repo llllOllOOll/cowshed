@@ -20,6 +20,15 @@ server needs nothing of Cowshed's: no agent, no panel and no proxy of its own.
 - **Safety:** a lock refuses two deploys at once, and a log on the server records
   who deployed what.
 
+## Starting a project
+
+```bash
+cowshed init --host my-server --domain app.example.com  # Writes the config, on this machine
+cowshed check --remote                                   # Reads it, reaches the server
+cowshed setup --dry-run                                  # Says what setup would do
+cowshed setup && cowshed deploy
+```
+
 ## Build
 
 Needs Zig 0.17.

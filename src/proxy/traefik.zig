@@ -1,7 +1,8 @@
-//! What a running Traefik is set up to do, read from its flags, and the Traefik
-//! Cowshed starts on a server that has none.
+//! What a running Traefik is set up to do, read from its flags or its settings file,
+//! and the Traefik Cowshed starts on a server that has none.
 
 const std = @import("std");
+const yaml = @import("../config/yaml.zig");
 const Allocator = std.mem.Allocator;
 
 /// The version the risk tests ran on (docs/spikes.md). Pinned: `latest` floats.
@@ -22,10 +23,18 @@ pub const Flags = struct {
     watch_off: bool = false,
     api: bool = false,
     docker_network: ?[]const u8 = null,
+    /// `--configFile`: Traefik then reads that file, whatever else its flags say.
+    config_file: ?[]const u8 = null,
 
     /// With no entrypoint in its flags, it is set up by a file or the environment.
     pub fn found(self: Flags) bool {
         return self.http_entrypoint != null or self.https_entrypoint != null;
+    }
+
+    fn addEntrypoint(self: *Flags, name: []const u8, address: []const u8) void {
+        const bare = if (std.mem.endsWith(u8, address, "/tcp")) address[0 .. address.len - 4] else address;
+        if (std.mem.endsWith(u8, bare, ":80")) self.http_entrypoint = name;
+        if (std.mem.endsWith(u8, bare, ":443")) self.https_entrypoint = name;
     }
 };
 
@@ -46,11 +55,12 @@ pub fn parseFlags(args: []const []const u8) Flags {
         if (matchPrefix(key, "entrypoints.")) |rest| {
             const name_end = std.mem.indexOfScalar(u8, rest, '.') orelse continue;
             if (!std.ascii.eqlIgnoreCase(rest[name_end + 1 ..], "address")) continue;
-            if (std.mem.endsWith(u8, value, ":80")) flags.http_entrypoint = rest[0..name_end];
-            if (std.mem.endsWith(u8, value, ":443")) flags.https_entrypoint = rest[0..name_end];
+            flags.addEntrypoint(rest[0..name_end], value);
         } else if (matchPrefix(key, "certificatesresolvers.")) |rest| {
             const name_end = std.mem.indexOfScalar(u8, rest, '.') orelse continue;
             if (flags.resolver == null) flags.resolver = rest[0..name_end];
+        } else if (std.ascii.eqlIgnoreCase(key, "configfile")) {
+            flags.config_file = value;
         } else if (std.ascii.eqlIgnoreCase(key, "providers.file.directory")) {
             flags.routes_dir = value;
         } else if (std.ascii.eqlIgnoreCase(key, "providers.file.filename")) {
@@ -64,6 +74,49 @@ pub fn parseFlags(args: []const []const u8) Flags {
         }
     }
     return flags;
+}
+
+/// The same, from Traefik's settings file. Only these keys are read: the file may
+/// hold secrets, and none of it is kept or shown.
+pub fn parseSettings(root: yaml.Value) Flags {
+    var flags: Flags = .{};
+    if (field(root, "entrypoints")) |entrypoints| {
+        if (entrypoints == .map) {
+            for (entrypoints.map) |entry| {
+                const address = scalar(entry.value, "address") orelse continue;
+                flags.addEntrypoint(entry.key, address);
+            }
+        }
+    }
+    if (field(root, "certificatesresolvers")) |resolvers| {
+        if (resolvers == .map and resolvers.map.len > 0) flags.resolver = resolvers.map[0].key;
+    }
+    if (field(root, "providers")) |providers| {
+        if (field(providers, "file")) |file| {
+            flags.routes_dir = scalar(file, "directory");
+            flags.routes_file = scalar(file, "filename") != null;
+            if (scalar(file, "watch")) |watch| flags.watch_off = std.ascii.eqlIgnoreCase(watch, "false");
+        }
+        if (field(providers, "docker")) |docker| flags.docker_network = scalar(docker, "network");
+    }
+    if (field(root, "api")) |api| {
+        if (scalar(api, "insecure")) |insecure| flags.api = std.ascii.eqlIgnoreCase(insecure, "true");
+    }
+    return flags;
+}
+
+/// Traefik's keys are case-insensitive.
+fn field(value: yaml.Value, key: []const u8) ?yaml.Value {
+    if (value != .map) return null;
+    for (value.map) |entry| {
+        if (std.ascii.eqlIgnoreCase(entry.key, key)) return entry.value;
+    }
+    return null;
+}
+
+fn scalar(value: yaml.Value, key: []const u8) ?[]const u8 {
+    const found = field(value, key) orelse return null;
+    return if (found == .scalar) found.scalar else null;
 }
 
 /// `true` for `traefik`, `traefik:3`, `registry.example/x/traefik:latest`.
@@ -158,6 +211,75 @@ test "a single route file, watching off, no API, no flags" {
     try testing.expect(parseFlags(&.{"--providers.file.watch=false"}).watch_off);
     try testing.expect(!parseFlags(&.{"--api.insecure=false"}).api);
     try testing.expect(!parseFlags(&.{}).found());
+}
+
+fn settings(arena: *std.heap.ArenaAllocator, source: []const u8) !Flags {
+    var failure: yaml.Failure = undefined;
+    return parseSettings(try yaml.parseWith(arena.allocator(), source, &failure, .{ .foreign = true }));
+}
+
+test "a settings file with no routes folder" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const flags = try settings(&arena,
+        \\api:
+        \\  dashboard: true
+        \\entryPoints:
+        \\  http:
+        \\    address: ":80"
+        \\  https:
+        \\    address: ":443"
+        \\providers:
+        \\  docker:
+        \\    exposedByDefault: false
+        \\certificatesResolvers:
+        \\  letsencrypt:
+        \\    acme:
+        \\      email: me@x
+    );
+    try testing.expectEqualStrings("http", flags.http_entrypoint.?);
+    try testing.expectEqualStrings("https", flags.https_entrypoint.?);
+    try testing.expectEqualStrings("letsencrypt", flags.resolver.?);
+    try testing.expect(flags.routes_dir == null);
+    try testing.expect(!flags.api);
+}
+
+test "a settings file with everything, in any case, among what it does not need" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const flags = try settings(&arena,
+        \\---
+        \\API:
+        \\  insecure: true
+        \\entrypoints:
+        \\  web:
+        \\    address: 0.0.0.0:80/tcp
+        \\  secure:
+        \\    address: ":443"
+        \\    forwardedHeaders:
+        \\      trustedIPs: ["10.0.0.0/8"]
+        \\  call:
+        \\    address: ":443/udp"
+        \\providers:
+        \\  file:
+        \\    directory: /routes
+        \\    watch: false
+        \\  docker:
+        \\    network: web
+    );
+    try testing.expectEqualStrings("web", flags.http_entrypoint.?);
+    try testing.expectEqualStrings("secure", flags.https_entrypoint.?);
+    try testing.expectEqualStrings("/routes", flags.routes_dir.?);
+    try testing.expectEqualStrings("web", flags.docker_network.?);
+    try testing.expect(flags.watch_off);
+    try testing.expect(flags.api);
+}
+
+test "a settings file with one route file, and the flag naming a settings file" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    try testing.expect((try settings(&arena, "providers:\n  file:\n    filename: /a.yml\n")).routes_file);
+    try testing.expectEqualStrings("/t.yml", parseFlags(&.{"--configFile=/t.yml"}).config_file.?);
 }
 
 test "image names" {

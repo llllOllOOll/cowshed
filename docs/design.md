@@ -10,6 +10,7 @@ on a throwaway server; `setup` and `deploy` also on a real one, for one app.
 
 | Command | Does |
 |---|---|
+| `cowshed init [--host H] [--domain D]` | Starts a project: its config and secrets file, from what the folder and its Dockerfile say. Reaches no server, overwrites nothing |
 | `cowshed check [--remote]` | Reads the config and the secrets' names, running no secret's command; `--remote` also reaches the server and Docker. Changes nothing |
 | `cowshed setup` | Prepares a server for its first deploy, safe to run again (below) |
 | `cowshed deploy` | The flow below |
@@ -104,9 +105,11 @@ keeps meaning the running container. Uncommitted work (`--dirty`) is
 
 Look at the host first:
 - **A Traefik with a file provider:** use it. Read its network, entrypoint and
-  certificate resolver from its flags in `docker inspect`, never its environment,
-  which may hold secrets. Configured by a static file or environment instead: stop
-  and say so, for now.
+  certificate resolver from its flags in `docker inspect`, or from its YAML settings
+  file through its own container, found where Traefik looks for it. Only those keys
+  are read, the file stays in memory and its contents are never shown: it may hold
+  secrets. Never its environment, for the same reason. Configured by the environment
+  or a TOML file: stop and say so.
 - **A Traefik without one:** stop and explain. Adding it means restarting Traefik
   or recreating its container, which touches every other app on that host. Only
   with the owner's explicit yes, never silently.

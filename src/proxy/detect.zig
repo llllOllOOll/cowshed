@@ -6,10 +6,23 @@ const Config = @import("../config/Config.zig");
 const Remote = @import("../remote/Remote.zig");
 const docker = @import("../docker/commands.zig");
 const traefik = @import("traefik.zig");
+const yaml = @import("../config/yaml.zig");
 const Allocator = std.mem.Allocator;
 
 /// Given a routes folder as `$1`, inside Traefik's container.
 const CAN_USE_FROM_INSIDE = "test -d \"$1\" && test -w \"$1\" && command -v wget >/dev/null";
+
+/// Traefik's own search, from inside its container: the path found, then the file.
+/// Given the file its flags name as `$1`, if any. Exits with NO_SETTINGS_FILE if none.
+const FIND_SETTINGS =
+    \\show() { [ -f "$1" ] || return 1; printf '%s\n' "$1"; cat "$1"; exit 0; }
+    \\if [ -n "$1" ]; then show "$1"; exit 3; fi
+    \\for d in /etc/traefik ${XDG_CONFIG_HOME:+"$XDG_CONFIG_HOME"} ${HOME:+"$HOME/.config"} .; do
+    \\  for e in yml yaml toml; do show "$d/traefik.$e"; done
+    \\done
+    \\exit 3
+;
+const NO_SETTINGS_FILE = 3;
 
 pub const Traefik = struct {
     id: []const u8,
@@ -60,10 +73,13 @@ fn read(arena: Allocator, remote: Remote, proxy: Config.Proxy, start: Traefik) R
     try args.appendSlice(arena, parseStrings(arena, fields.next() orelse "null"));
     try args.appendSlice(arena, parseStrings(arena, fields.next() orelse "null"));
     const networks = std.mem.trim(u8, fields.next() orelse "", " \r");
-    const flags = traefik.parseFlags(args.items);
+    var flags = traefik.parseFlags(args.items);
 
-    if (!flags.found()) {
-        return stopped(arena, "Traefik `{s}` is set up by a file or its environment, which Cowshed does not read yet", .{name});
+    if (flags.config_file != null or !flags.found()) {
+        switch (try readSettings(arena, remote, start, flags.config_file orelse "")) {
+            .flags => |from_file| flags = from_file,
+            .stopped => |message| return .{ .stopped = message },
+        }
     }
     if (flags.routes_file) {
         return stopped(arena, "Traefik `{s}` reads one route file, and a switch needs a folder (`providers.file.directory`). That change restarts Traefik and touches every app it serves: make it when that suits", .{name});
@@ -98,6 +114,34 @@ fn read(arena: Allocator, remote: Remote, proxy: Config.Proxy, start: Traefik) R
     found.resolver = flags.resolver;
     found.api = flags.api;
     return .{ .traefik = found };
+}
+
+const Settings = union(enum) {
+    flags: traefik.Flags,
+    stopped: []const u8,
+};
+
+/// Never says what the file holds: it may have secrets. Stays only in memory.
+fn readSettings(arena: Allocator, remote: Remote, found: Traefik, named: []const u8) Remote.Error!Settings {
+    const name = found.name;
+    const read_file = try remote.run(arena, .{ .argv = &.{ "docker", "exec", found.id, "sh", "-c", FIND_SETTINGS, "sh", named } });
+    const newline = std.mem.indexOfScalar(u8, read_file.stdout, '\n');
+    if (read_file.exit_code == NO_SETTINGS_FILE or (read_file.ok() and newline == null)) {
+        return .{ .stopped = try std.fmt.allocPrint(arena, "Traefik `{s}` has no entrypoint in its flags and no settings file: it is set up by its environment, which Cowshed does not read", .{name}) };
+    }
+    if (!read_file.ok()) {
+        return .{ .stopped = try std.fmt.allocPrint(arena, "could not read Traefik `{s}`'s settings file from inside its container: {s}", .{ name, lastLine(read_file.stderr) }) };
+    }
+    const path = read_file.stdout[0..newline.?];
+    if (std.mem.endsWith(u8, path, ".toml")) {
+        return .{ .stopped = try std.fmt.allocPrint(arena, "Traefik `{s}` is set up by `{s}`, and Cowshed reads only YAML settings", .{ name, path }) };
+    }
+    var failure: yaml.Failure = undefined;
+    const root = yaml.parseWith(arena, read_file.stdout[newline.? + 1 ..], &failure, .{ .foreign = true }) catch |err| switch (err) {
+        error.InvalidYaml => return .{ .stopped = try std.fmt.allocPrint(arena, "could not understand Traefik `{s}`'s `{s}`, line {d}: {s}", .{ name, path, failure.line, failure.message }) },
+        else => |e| return e,
+    };
+    return .{ .flags = traefik.parseSettings(root) };
 }
 
 fn stopped(arena: Allocator, comptime format: []const u8, args: anytype) Allocator.Error!Outcome {

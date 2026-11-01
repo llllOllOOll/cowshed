@@ -91,9 +91,52 @@ grep -q "network network_public" "$WORK/out" || fail "did not read the network"
 grep -q "resolver letsencrypt" "$WORK/out" || fail "did not read the resolver"
 [ "$(inside docker ps -q | wc -l)" = 1 ] || fail "started something else"
 
+echo "== a Traefik set up by a file, with no routes folder: read, and left alone"
+inside docker rm -f traefik >/dev/null
+inside mkdir -p /byfile/routes
+docker exec -i "$NAME" sh -c 'cat > /byfile/traefik.yml' <<'YAML'
+entryPoints:
+  http:
+    address: ":80"
+  https:
+    address: ":443"
+providers:
+  docker:
+    exposedByDefault: false
+certificatesResolvers:
+  letsencrypt:
+    acme:
+      email: file-secret@b.example
+      storage: /tmp/acme.json
+      httpChallenge:
+        entryPoint: http
+YAML
+inside docker run -d --name traefik --network network_public -p 80:80 -p 443:443 \
+	-v /byfile/traefik.yml:/traefik.yml:ro traefik:3.6.6 traefik >/dev/null
+sleep 1
+before=$(inside docker inspect -f '{{.Id}} {{.State.StartedAt}}' traefik)
+if "${C[@]}" > "$WORK/out"; then cat "$WORK/out"; fail "it should have stopped"; fi
+grep -q "no routes folder" "$WORK/out" || { cat "$WORK/out"; fail "wrong reason"; }
+if grep -q "file-secret" "$WORK/out"; then fail "it showed the file's contents"; fi
+[ "$before" = "$(inside docker inspect -f '{{.Id}} {{.State.StartedAt}}' traefik)" ] || fail "it touched Traefik"
+
+echo "== the same file with a routes folder: used, and nothing added"
+inside docker rm -f traefik >/dev/null
+inside sh -c 'sed -i "s|^providers:|providers:\n  file:\n    directory: /routes|" /byfile/traefik.yml'
+inside docker run -d --name traefik --network network_public -p 80:80 -p 443:443 \
+	-v /byfile/traefik.yml:/traefik.yml:ro -v /byfile/routes:/routes traefik:3.6.6 traefik >/dev/null
+sleep 1
+before=$(inside docker inspect -f '{{.Id}} {{.State.StartedAt}}' traefik)
+"${C[@]}" | tee "$WORK/out"
+grep -q "routes /routes" "$WORK/out" || fail "did not read the routes folder"
+grep -q "entrypoint https" "$WORK/out" || fail "did not read the entrypoint"
+grep -q "resolver letsencrypt" "$WORK/out" || fail "did not read the resolver"
+if grep -q "file-secret" "$WORK/out"; then fail "it showed the file's contents"; fi
+[ "$before" = "$(inside docker inspect -f '{{.Id}} {{.State.StartedAt}}' traefik)" ] || fail "it touched Traefik"
+[ "$(inside docker ps -q | wc -l)" = 1 ] || fail "started something else"
+
 echo "== a program on port 443, and no Traefik: stops, starts nothing"
 inside docker rm -f traefik >/dev/null
-inside docker rm -f traefik >/dev/null 2>&1 || true
 inside sh -c 'nohup nc -lk -p 443 >/dev/null 2>&1 & echo started' >/dev/null
 sleep 1
 if "${C[@]}" > "$WORK/out"; then cat "$WORK/out"; fail "it should have stopped"; fi

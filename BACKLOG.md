@@ -22,6 +22,10 @@
       nothing changed, what it was made from on the container and in the audit log
       (`tests/monorepo_e2e.sh`)
 
+- [x] `cowshed init`: a project's config and secrets file
+- [x] A Traefik set up by a YAML settings file is read, its contents never shown
+      (`tests/setup_e2e.sh`)
+
 ## Second version
 
 - [ ] Accessories (database, Keycloak)
@@ -30,6 +34,9 @@
 
 ## Open
 
+- [ ] `cowshed proxy adopt`: gives a working Traefik a routes folder, once, with the owner's
+      yes: same version and settings, backups, the old container kept. By hand on a first
+      server before it is a command. A Compose project may own that Traefik
 - [ ] `env_file` in `config/deploy.yml` (`env_file: ~/.my_secrets`), so a deploy needs no
       `source` first. Only the path is in the repository. Cowshed runs the file as `source`
       would and uses the result for that command alone. What is already in the environment
@@ -46,7 +53,7 @@
 - [ ] Installing Docker has run only against the fake: try it on a clean VM
 - [ ] Our own Traefik's Let's Encrypt certificates: not issued yet; the VPS's Traefik
       issued one through a file route
-- [ ] A Traefik set up by a static file or its environment: `setup` stops, read them
+- [ ] A Traefik set up by a TOML file or its environment: `setup` stops, read them
 - [ ] A routes folder not writable from inside Traefik: the helper container
 - [ ] Hooks for games: `pre_switch`, `post_switch`. `builder.before` covers the check before sending
 - [ ] `logs` and `exec` give their output at the end: following logs needs streaming

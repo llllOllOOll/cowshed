@@ -6,14 +6,21 @@ understood with 2.
 
 ## Preparing
 
+**`cowshed init [--host <server>] [--domain <name>]`** starts a project with nothing of
+Cowshed's: `config/deploy.yml`, `.cowshed/secrets`, and the secrets kept out of git in
+`.gitignore`. The service comes from the folder's name and the port from the Dockerfile's
+`EXPOSE`; what it cannot know it says to fill in. It reaches no server. If
+`config/deploy.yml` exists it changes nothing; existing secrets are kept.
+
 **`cowshed check [--secrets <path>] [--remote]`** reads the config and the secrets'
 names, without running any secret's command. `--remote` also reaches the server and
 Docker. Changes nothing.
 
 **`cowshed setup [--dry-run]`** prepares a server, and is safe to run again: Docker if
 missing (needs root or sudo without a password), `~/.cowshed`, and Traefik if none
-runs. It uses a Traefik already there and changes nothing that exists. It stops, saying
-why, at anything that would touch other apps. `--dry-run` says what it would do.
+runs. It uses a Traefik already there, set up by flags or a YAML settings file, and
+changes nothing that exists. It stops, saying why, at anything that would touch other
+apps, such as a Traefik with no routes folder. `--dry-run` says what it would do.
 
 ## Deploying
 

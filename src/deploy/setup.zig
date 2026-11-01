@@ -301,7 +301,7 @@ test "a Traefik that would need a restart stops it, untouched" {
         .{ .inspect = "null\n[\"--entrypoints.web.address=:80\"]\nnet \n", .says = "no routes folder" },
         .{ .inspect = "null\n[\"--entrypoints.web.address=:80\",\"--providers.file.filename=/a.yml\"]\nnet \n", .says = "reads one route file" },
         .{ .inspect = "null\n[\"--entrypoints.web.address=:80\",\"--providers.file.directory=/r\",\"--providers.file.watch=false\"]\nnet \n", .says = "does not watch" },
-        .{ .inspect = "null\nnull\nnet \n", .says = "set up by a file or its environment" },
+        .{ .inspect = "null\nnull\nnet \n", .says = "set up by its environment" },
     };
     for (cases) |case| {
         var h = Harness.create();
@@ -312,6 +312,73 @@ test "a Traefik that would need a restart stops it, untouched" {
         try h.says(case.says);
         try testing.expect(!h.fake.ran("docker run"));
         try testing.expect(!h.fake.ran("docker rm"));
+    }
+}
+
+const FILE_INSPECT = "[\"/entrypoint.sh\"]\n[\"traefik\"]\nweb \n";
+const SETTINGS_SECRET = "s3cret-value";
+const SETTINGS =
+    \\/traefik.yml
+    \\entryPoints:
+    \\  http:
+    \\    address: ":80"
+    \\  https:
+    \\    address: ":443"
+    \\providers:
+    \\  docker:
+    \\    exposedByDefault: false
+    \\certificatesResolvers:
+    \\  letsencrypt:
+    \\    acme:
+    \\      email: s3cret-value
+    \\
+;
+
+test "a Traefik set up by a file with no routes folder: read, told and left alone" {
+    var h = Harness.create();
+    defer h.deinit();
+    h.start();
+    try existingWith(&h, FILE_INSPECT);
+    try h.on("traefik.$e", 0, SETTINGS);
+    try testing.expect(!try h.setup(SSL_PROXY, .{ .dry_run = true }));
+    try h.says("no routes folder");
+    try h.changedNothing();
+    try testing.expect(std.mem.indexOf(u8, h.output.written(), SETTINGS_SECRET) == null);
+}
+
+test "a Traefik set up by a file with a routes folder is used" {
+    var h = Harness.create();
+    defer h.deinit();
+    h.start();
+    try existingWith(&h, FILE_INSPECT);
+    // The routes folder, added to what the server holds.
+    const with_folder = try std.mem.replaceOwned(u8, h.arena.allocator(), SETTINGS, "  docker:\n", "  file:\n    directory: /routes\n  docker:\n");
+    try h.on("traefik.$e", 0, with_folder);
+    try testing.expect(try h.setup(SSL_PROXY, .{}));
+    try h.says("network web");
+    try h.says("routes /routes");
+    try h.says("entrypoint https");
+    try h.says("resolver letsencrypt");
+    try h.says("notice: Traefik's API is off");
+    try testing.expect(!h.fake.ran("docker run"));
+    try testing.expect(std.mem.indexOf(u8, h.output.written(), SETTINGS_SECRET) == null);
+}
+
+test "a settings file that cannot be read says why, without its contents" {
+    const cases = [_]struct { exit_code: u8, stdout: []const u8, says: []const u8 }{
+        .{ .exit_code = 0, .stdout = "/traefik.toml\n[api]\n", .says = "reads only YAML" },
+        .{ .exit_code = 0, .stdout = "/traefik.yml\nemail: &a s3cret-value\n", .says = "`/traefik.yml`, line 1" },
+        .{ .exit_code = 126, .stdout = "", .says = "could not read" },
+    };
+    for (cases) |case| {
+        var h = Harness.create();
+        defer h.deinit();
+        h.start();
+        try existingWith(&h, FILE_INSPECT);
+        try h.on("traefik.$e", case.exit_code, case.stdout);
+        try testing.expect(!try h.setup(SSL_PROXY, .{}));
+        try h.says(case.says);
+        try testing.expect(std.mem.indexOf(u8, h.output.written(), SETTINGS_SECRET) == null);
     }
 }
 

@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const check = @import("check.zig");
+const init = @import("init.zig");
 const setup = @import("setup.zig");
 const deploy = @import("deploy.zig");
 const lock = @import("lock.zig");
@@ -15,6 +16,9 @@ pub const USAGE =
     \\
     \\Usage: cowshed <command>
     \\
+    \\  init       Start this project: config/deploy.yml and its secrets. Overwrites nothing
+    \\    --host <server>        The server
+    \\    --domain <name>        Where the app answers
     \\  check      Check config/deploy.yml and the secrets' names; runs no secret's command
     \\    -c, --config <path>    Another config file
     \\    --secrets <path>       Another secrets file
@@ -47,6 +51,7 @@ pub const USAGE =
 pub const Parsed = union(enum) {
     help,
     version,
+    init: init.Options,
     check: check.Options,
     setup: setup.Options,
     deploy: deploy.Options,
@@ -61,6 +66,7 @@ pub fn parse(args: []const []const u8) Parsed {
     const command = args[0];
     if (eql(command, "help") or eql(command, "--help")) return .help;
     if (eql(command, "version") or eql(command, "--version")) return .version;
+    if (eql(command, "init")) return parseInit(args[1..]);
     if (eql(command, "setup")) return parseSetup(args[1..]);
     if (eql(command, "deploy")) return parseDeploy(args[1..]);
     if (eql(command, "lock")) return parseLock(args[1..]);
@@ -89,6 +95,19 @@ pub fn parse(args: []const []const u8) Parsed {
         }
     }
     return .{ .check = options };
+}
+
+fn parseInit(args: []const []const u8) Parsed {
+    var options: init.Options = .{};
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
+        if (!eql(arg, "--host") and !eql(arg, "--domain")) return .{ .invalid = arg };
+        i += 1;
+        if (i == args.len) return .{ .invalid = arg };
+        if (eql(arg, "--host")) options.host = args[i] else options.domain = args[i];
+    }
+    return .{ .init = options };
 }
 
 fn parseSetup(args: []const []const u8) Parsed {
@@ -153,6 +172,9 @@ pub fn run(arena: Allocator, io: std.Io, environ: *const std.process.Environ.Map
     switch (parse(args)) {
         .help => try out.writeAll(USAGE),
         .version => try out.writeAll(VERSION ++ "\n"),
+        .init => |options| {
+            if (!try init.run(arena, io, out, options)) return 1;
+        },
         .check => |options| {
             if (!try check.run(arena, io, out, options)) return 1;
         },
@@ -191,6 +213,14 @@ test "commands and their flags" {
     try testing.expectEqualStrings("a.yml", parsed.config_path);
     try testing.expectEqualStrings("s", parsed.secrets_path.?);
     try testing.expect(parsed.remote);
+}
+
+test "init and its flags" {
+    const parsed = parse(&.{ "init", "--host", "h", "--domain", "d" }).init;
+    try testing.expectEqualStrings("h", parsed.host.?);
+    try testing.expectEqualStrings("d", parsed.domain.?);
+    try testing.expectEqualStrings("--host", parse(&.{ "init", "--host" }).invalid);
+    try testing.expectEqualStrings("--nope", parse(&.{ "init", "--nope" }).invalid);
 }
 
 test "setup and its flags" {
