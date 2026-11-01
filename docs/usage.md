@@ -55,12 +55,15 @@ move it away and run `init` again. `check` names any option Cowshed does not kno
 ## Deploying
 
 ```bash
-git commit -am "What changed"
+git add <the files>       # `git commit -a` alone leaves new files out
+git commit -m "What changed"
+git status                # Nothing you meant to ship should be listed
 cowshed deploy
 ```
 
 - **Only what is committed goes,** from the repository on this machine: no push is needed.
-  Read the notice saying how many files differ here: they are not in this deploy.
+  Read the notices: they say how many files differ here and name the new ones, and none of
+  them is in this deploy. The build may still pass without them.
 - **The same commit again** says "nothing changed" and ends, with no error and nothing
   deployed. `--force` deploys it anyway.
 - **`--dirty`** builds this folder as it is, as a test, and what git ignores can enter.
@@ -119,12 +122,44 @@ data too, even if the new version then fails. The app's own backup command can r
 live version's settings and volumes, and the copy be taken off the server:
 
 ```bash
-cowshed exec my-app backup /data/backup-2026-01-31.db
+cowshed exec ./my-app backup /data/backup-2026-01-31.db
 scp root@my-server:/var/lib/my-app/backup-2026-01-31.db .
 ```
 
 **A rollback changes the code, not the data.** After a migration the old version meets the
-new schema, and may fail on it. Going back further means restoring that backup by hand.
+new schema, and may fail on it. Going back further means restoring that backup by hand, in
+this order: `cowshed stop`; on the server, replace the database file and delete its old `-wal`
+and `-shm` files; `cowshed rollback <version>` to the version that matches the backup. All that was written after
+the backup is lost, and whatever else in the volume goes with the database, such as uploaded
+files, must return with it.
+
+## Running one command
+
+`cowshed exec <command...>` starts a new container of the live version, with its variables,
+network and volumes. The words replace the image's `CMD` and follow any `ENTRYPOINT`, and run in
+its `WORKDIR`, so write them as there: `./my-app backup`, if it is not on the `PATH`. It needs a
+version on the server: there is nothing to run before the first deploy.
+
+## The client's address
+
+Traefik sets `X-Forwarded-For` and the like, and `proxy.forward_headers` changes nothing. Whether
+to believe them is the app's decision: it should trust only what comes from Traefik's network.
+On the server, `docker inspect <traefik>` names its networks, and `docker network inspect <network>`
+shows their addresses.
+
+## The first certificate
+
+`deploy` asks the address from outside for about 30 s and only tells what it found, as a new
+certificate may take longer. Traefik's first certificate resolver is the one used. Let's Encrypt
+must reach the server on the domain, and Traefik serves its own default certificate until then.
+
+```bash
+curl -I https://app.example.com/up                  # Still failing a few minutes later?
+ssh root@my-server 'docker logs <traefik> 2>&1 | grep -i -E "acme|certificate" | tail'
+```
+
+A log line naming the domain with an error is a failure, not a delay. Check the DNS, and that
+ports 80 and 443 reach the server. Repeating deploys does not help: Let's Encrypt limits attempts.
 
 ## Long connections
 
@@ -137,12 +172,12 @@ them as they are: try a long connection through it.
 ## Adopting a Traefik
 
 Before the cut it tries the new settings in a throwaway container, and if that fails nothing
-has changed. After the cut, for up to the limit it shows, it compares each app with how it was:
+has changed. After the cut, for up to 30 s, it compares each app with how it was:
 
 - The routers from running containers' Docker labels must be enabled.
 - Each host in those labels is asked for `/` by HTTP and HTTPS, from the server. An answer that
-  stays the same or becomes 2xx or 3xx is fine. Without `curl` on the server only the routers
-  count.
+  stays the same or becomes 2xx or 3xx is fine, so one that was already 404 or 500 and stays
+  so passes. Without `curl` on the server only the routers count, and it says so.
 
 If either fails, it puts the files back and recreates Traefik, and says so.
 
@@ -164,8 +199,12 @@ cp -p ~/.cowshed/backups/traefik-<time>/settings <settings file>
 cd <its folder> && docker compose up -d <service>
 ```
 
+Leave `mount-<n>` where it is unless a file there was damaged: an old `acme.json`, for one, would
+lose the certificates issued since. These steps are the server owner's to run or approve.
+
 There is no command to undo an adoption that succeeded yet. The same steps do it, and cut the
-apps again.
+apps again. **Apps Cowshed publishes on that Traefik then lose their routes and go off the air,**
+as the routes folder is no longer read: `cowshed stop` them first.
 
 ## Running it
 
@@ -197,8 +236,8 @@ leaves the old version serving.
 | `no Traefik runs on this server` | `cowshed setup` |
 | `Traefik did not take the new route` | Read what the message says: a broken file in the routes folder blocks every change there |
 | `the apps did not come back as they were` | Everything was put back. Read which app it names, and find out why before trying again |
-| `RESTORE FAILED` | Act now: Traefik may be down. See [Adopting a Traefik](#adopting-a-traefik) |
-| `notice: from outside: ... did not answer` | Not a failure: DNS or a first certificate may take longer. Check the address again in a moment |
+| `RESTORE FAILED` | Urgent: Traefik may be down. Call the server owner at once. See [Adopting a Traefik](#adopting-a-traefik) |
+| `notice: from outside: ... did not answer` | Not known yet: DNS or a first certificate may take longer. See [The first certificate](#the-first-certificate) |
 
 ## Limits worth knowing
 
@@ -219,10 +258,13 @@ Follow the steps above, and these rules:
   Refer to secrets by name. `cowshed exec` returns all a command prints: a command that shows
   a token or password is for the owner to run, not you.
 - **Ask the owner first, each time,** for `cowshed proxy adopt --yes`, `cowshed remove --yes`,
-  `cowshed lock release` and `cowshed stop`. An earlier yes does not extend to another server
-  or another time.
+  `cowshed lock release`, `cowshed stop` and `cowshed rollback`. On a server other apps share,
+  also for `cowshed setup`, the first `cowshed deploy` and any copy into a volume. An earlier
+  yes does not extend to another server or another time. The owner's own rules come before this
+  list.
 - **Do not edit Traefik's settings, its routes or other apps' containers by hand.** If Cowshed
-  stops at one of them, report what it said.
+  stops at one of them, report what it said. After `RESTORE FAILED` too: call the owner, and run
+  the steps by hand only with the owner's yes.
 - **Do not reach for `--dirty` or `--force` to get past a message.** Read it first. Commit what
   should ship.
 - **Run what changes nothing first:** `check --remote` and `setup --dry-run`. `proxy adopt`

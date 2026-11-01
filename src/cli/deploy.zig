@@ -21,6 +21,7 @@ pub const Options = struct {
 };
 
 const MAX_SECRETS_BYTES = 1024 * 1024;
+const MAX_NEW_SHOWN = 20;
 
 const SecretsContext = struct {
     io: std.Io,
@@ -64,6 +65,9 @@ pub fn run(arena: Allocator, io: std.Io, environ: *const std.process.Environ.Map
             try out.print("source: {s} at {s}, last changed in {s}\n", .{ source.name, source.short, source.touched });
             if (source.uncommitted > 0) {
                 try out.print("notice: {s} has {d} files that differ here: they are not part of this deploy\n", .{ source.name, source.uncommitted });
+                const shown = @min(source.untracked.len, MAX_NEW_SHOWN);
+                for (source.untracked[0..shown]) |path| try out.print("notice: new, not in git, left out: {s}\n", .{path});
+                if (source.untracked.len > shown) try out.print("notice: and {d} more new ones: see `git status`\n", .{source.untracked.len - shown});
             }
         }
         const live = core.liveFrom(arena, ssh.remote(), config.service, made_from.?) catch |err| {

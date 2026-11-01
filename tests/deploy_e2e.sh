@@ -108,6 +108,8 @@ inside docker run -d --name legacy alpine sleep 600 >/dev/null
 cowshed deploy | tee "$WORK/out" | grep -vE '^#|^$|^ *$' | cut -c1-120 | tail -12
 [ "$(serving)" = one ] || fail "not serving one: $(serving)"
 grep -q "not part of this deploy" "$WORK/out" || fail "it did not say what stayed out"
+grep -q "new, not in git, left out: untracked.txt" "$WORK/out" || fail "it did not name the new file"
+if grep -q "left out: ignored.env" "$WORK/out"; then fail "it named a file git ignores"; fi
 grep -q "app.py" "$WORK/seen" || fail "the build saw no copy"
 if grep -qE "untracked.txt|ignored.env" "$WORK/seen"; then fail "the build saw what is not committed"; fi
 git -C "$APP" checkout -q -- version.txt

@@ -62,7 +62,19 @@ pub const Source = struct {
     touched: []const u8,
     /// Files in the folder that differ from what will be built.
     uncommitted: usize,
+    /// Those git does not know yet, by name: `git commit -a` leaves them out too.
+    untracked: []const []const u8 = &.{},
 };
+
+/// The new files in `git status --porcelain`; a whole new folder is one entry.
+fn untrackedIn(arena: Allocator, status: []const u8) Allocator.Error![]const []const u8 {
+    var found: std.ArrayList([]const u8) = .empty;
+    var lines = std.mem.tokenizeScalar(u8, status, '\n');
+    while (lines.next()) |line| {
+        if (std.mem.startsWith(u8, line, "?? ")) try found.append(arena, line[3..]);
+    }
+    return found.items;
+}
 
 pub const SourcesResult = union(enum) {
     sources: []const Source,
@@ -109,6 +121,7 @@ pub fn readSources(arena: Allocator, io: Io, listed: []const []const u8, branch:
             .short = commit[0..@min(commit.len, SHORT_COMMIT)],
             .touched = touched,
             .uncommitted = changed,
+            .untracked = try untrackedIn(arena, status),
         });
     }
     return .{ .sources = sources.items };
@@ -191,6 +204,16 @@ test "a command's stdout, and its failure" {
     const a = arena.allocator();
     try testing.expectEqualStrings("value\n", try shell(a, testing.io, "echo value"));
     try testing.expectError(error.CommandFailed, shell(a, testing.io, "exit 3"));
+}
+
+test "only what git does not know counts as new, a new folder as one" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const found = try untrackedIn(arena_state.allocator(), " M app.py\nA  added.py\n?? logo.svg\n?? public/brand/\n");
+    try std.testing.expectEqual(2, found.len);
+    try std.testing.expectEqualStrings("logo.svg", found[0]);
+    try std.testing.expectEqualStrings("public/brand/", found[1]);
+    try std.testing.expectEqual(0, (try untrackedIn(arena_state.allocator(), "")).len);
 }
 
 test "a fingerprint names each source and what last touched it" {

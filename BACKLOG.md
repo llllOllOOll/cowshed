@@ -25,6 +25,7 @@
 - [x] Every deploy builds from a clean copy of what is committed, not only with `branch` or
       `sources`. Before, a new file or one git ignores, such as `.env`, could enter an image
       unseen
+- [x] A deploy names the new files it leaves out, not only how many differ
 - [x] `docs/usage.md`: the way from nothing to a deploy, what to do when it stops, and the
       rules for a coding agent
 - [x] `cowshed proxy adopt`: a routes folder for a Traefik from one Compose file and a YAML

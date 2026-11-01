@@ -44,7 +44,7 @@ its health, moves the traffic, waits for the old one's connections and stops it.
 the traffic moves, any failure leaves the old version untouched.
 
 A deploy is built from a clean copy of what is committed. Changed files, new files and
-what git ignores stay out, and it says how many differ. If what runs came from the same
+what git ignores stay out. It says how many files differ and names the new ones. If what runs came from the same
 commits, it says so and stops.
 
 - `--dirty` ships this folder as it is, as a test: changes, new files and what git ignores,
@@ -64,7 +64,8 @@ from.
 **`cowshed audit`** shows who deployed what and when.
 
 **`cowshed exec [--version <v>] <command...>`** runs a new container of a version, the
-live one's by default, with the live one's variables and network, and removes it after.
+live one's by default, with the live one's variables, network and volumes, and removes it
+after. The words replace the image's `CMD`.
 Its exit code decides the result. Its output comes when it ends.
 
 ## Maintaining
