@@ -15,6 +15,8 @@ const Rule = struct {
     /// Applies when the command's words, joined by spaces, contain this.
     contains: []const u8,
     answer: Answer,
+    /// Applies only once a command containing this has run.
+    after: ?[]const u8 = null,
 };
 
 pub const Call = struct {
@@ -39,6 +41,11 @@ pub fn on(self: *Fake, contains: []const u8, answer: Answer) Allocator.Error!voi
     try self.rules.append(self.arena, .{ .contains = contains, .answer = answer });
 }
 
+/// The same, for what changes on the server once a command has run.
+pub fn onAfter(self: *Fake, after: []const u8, contains: []const u8, answer: Answer) Allocator.Error!void {
+    try self.rules.append(self.arena, .{ .contains = contains, .answer = answer, .after = after });
+}
+
 pub fn ran(self: Fake, contains: []const u8) bool {
     return self.position(contains) != null;
 }
@@ -61,6 +68,9 @@ fn run(ptr: *anyopaque, arena: Allocator, command: Remote.Command) Remote.Error!
         i -= 1;
         const rule = self.rules.items[i];
         if (std.mem.indexOf(u8, line, rule.contains) == null) continue;
+        if (rule.after) |after| {
+            if (!self.ran(after)) continue;
+        }
         return switch (rule.answer) {
             .result => |result| result,
             .connection_failed => error.ConnectionFailed,

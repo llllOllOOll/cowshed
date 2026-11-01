@@ -29,6 +29,10 @@ cowshed setup --dry-run                                  # Says what setup would
 cowshed setup && cowshed deploy
 ```
 
+If the server has a Traefik with no routes folder, `setup` stops and says so.
+`cowshed proxy adopt` shows what would change; with `--yes` it does it, cutting every
+app behind that Traefik for some seconds, so that is the server owner's call.
+
 ## Build
 
 Needs Zig 0.17.

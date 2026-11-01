@@ -13,6 +13,7 @@ scripts/check.sh     # Format, tests and the architecture rules
 tests/setup_e2e.sh   # setup over real SSH on a throwaway server (needs Docker)
 tests/deploy_e2e.sh  # deploy the same way, under traffic, with its failures
 tests/monorepo_e2e.sh # a project in a monorepo, from clean copies
+tests/proxy_e2e.sh   # adopting a Traefik another app's Compose owns, under traffic
 ```
 
 ## Architecture: ports and adapters
@@ -46,7 +47,8 @@ Folders appear with their first file; this tree is the target.
 - **Never compile on a production server.** It only packages or loads images.
 - **Touch only what Cowshed owns on a server.** Other apps' routes, containers
   and Traefik's own settings are not ours; a change that restarts Traefik needs
-  the owner's explicit yes.
+  the owner's explicit yes: only `cowshed proxy adopt --yes` does, never `setup` or
+  `deploy`.
 - **An unknown config option is refused by name,** not ignored.
 
 ## Keeping the docs true

@@ -20,7 +20,16 @@ Docker. Changes nothing.
 missing (needs root or sudo without a password), `~/.cowshed`, and Traefik if none
 runs. It uses a Traefik already there, set up by flags or a YAML settings file, and
 changes nothing that exists. It stops, saying why, at anything that would touch other
-apps, such as a Traefik with no routes folder. `--dry-run` says what it would do.
+apps, such as a Traefik with no routes folder: `cowshed proxy adopt` gives it one. `--dry-run` says what it would do.
+
+**`cowshed proxy adopt [--yes]`** gives a working Traefik a routes folder. Alone it says
+what it would change, and changes nothing. With `--yes` it backs up the settings, the
+Compose file and what Traefik mounts, certificates included, to `~/.cowshed/backups`;
+tries the new settings in a throwaway container; then recreates Traefik alone, with the
+same image. **That cuts every app it serves for some seconds**, so `--yes` is the
+server owner's decision, per server, at a time that suits them. If an app got worse
+afterwards, it puts everything back. It handles a Traefik from one Compose file with
+a YAML settings file; anything else it refuses, saying what to add by hand.
 
 ## Deploying
 

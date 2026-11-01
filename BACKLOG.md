@@ -22,6 +22,8 @@
       nothing changed, what it was made from on the container and in the audit log
       (`tests/monorepo_e2e.sh`)
 
+- [x] `cowshed proxy adopt`: a routes folder for a Traefik from one Compose file and a YAML
+      settings file, proven before the cut (`tests/proxy_e2e.sh`). Not yet on a real server
 - [x] `volumes` on the app: every version, rollback and `exec`; `remove` leaves them.
       Server-sent events tested through a switch (`tests/deploy_e2e.sh`)
 - [x] `cowshed init`: a project's config and secrets file
@@ -36,9 +38,9 @@
 
 ## Open
 
-- [ ] `cowshed proxy adopt`: gives a working Traefik a routes folder, once, with the owner's
-      yes: same version and settings, backups, the old container kept. By hand on a first
-      server before it is a command. A Compose project may own that Traefik
+- [ ] `cowshed proxy adopt` for a Traefik set up by flags, several Compose files, Swarm or
+      a plain `docker run`: refused for now. Putting back after the cut has run only
+      against the fake
 - [ ] `env_file` in `config/deploy.yml` (`env_file: ~/.my_secrets`), so a deploy needs no
       `source` first. Only the path is in the repository. Cowshed runs the file as `source`
       would and uses the result for that command alone. What is already in the environment

@@ -6,6 +6,7 @@ const init = @import("init.zig");
 const setup = @import("setup.zig");
 const deploy = @import("deploy.zig");
 const lock = @import("lock.zig");
+const proxy = @import("proxy.zig");
 const ops = @import("ops.zig");
 const Allocator = std.mem.Allocator;
 
@@ -26,6 +27,9 @@ pub const USAGE =
     \\  setup      Prepare a server: Docker, folders, Traefik. Changes nothing that exists
     \\    -c, --config <path>    Another config file
     \\    --dry-run              Ask the server, say what would happen, change nothing
+    \\  proxy adopt  Give a working Traefik a routes folder: says what it would do
+    \\    -c, --config <path>    Another config file
+    \\    --yes                  Do it: restarts Traefik, cuts every app it serves for seconds
     \\  deploy     Build, send and start a version, then move the traffic to it
     \\    -c, --config <path>    Another config file
     \\    --secrets <path>       Another secrets file
@@ -56,6 +60,7 @@ pub const Parsed = union(enum) {
     setup: setup.Options,
     deploy: deploy.Options,
     lock: lock.Options,
+    proxy: proxy.Options,
     ops: ops.Options,
     /// What was not understood.
     invalid: []const u8,
@@ -70,6 +75,7 @@ pub fn parse(args: []const []const u8) Parsed {
     if (eql(command, "setup")) return parseSetup(args[1..]);
     if (eql(command, "deploy")) return parseDeploy(args[1..]);
     if (eql(command, "lock")) return parseLock(args[1..]);
+    if (eql(command, "proxy")) return parseProxy(args[1..]);
     if (ops.isCommand(command)) return switch (ops.parse(args)) {
         .options => |options| .{ .ops = options },
         .invalid => |what| .{ .invalid = what },
@@ -152,6 +158,26 @@ fn parseDeploy(args: []const []const u8) Parsed {
     return .{ .deploy = options };
 }
 
+fn parseProxy(args: []const []const u8) Parsed {
+    if (args.len == 0) return .{ .invalid = "proxy" };
+    if (!eql(args[0], "adopt")) return .{ .invalid = args[0] };
+    var options: proxy.Options = .{};
+    var i: usize = 1;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
+        if (eql(arg, "--yes")) {
+            options.yes = true;
+        } else if (eql(arg, "-c") or eql(arg, "--config")) {
+            i += 1;
+            if (i == args.len) return .{ .invalid = arg };
+            options.config_path = args[i];
+        } else {
+            return .{ .invalid = arg };
+        }
+    }
+    return .{ .proxy = options };
+}
+
 fn parseLock(args: []const []const u8) Parsed {
     if (args.len == 0) return .{ .invalid = "lock" };
     var options: lock.Options = .{ .action = std.meta.stringToEnum(lock.Action, args[0]) orelse return .{ .invalid = args[0] } };
@@ -186,6 +212,9 @@ pub fn run(arena: Allocator, io: std.Io, environ: *const std.process.Environ.Map
         },
         .ops => |options| {
             if (!try ops.run(arena, io, environ, out, options)) return 1;
+        },
+        .proxy => |options| {
+            if (!try proxy.run(arena, io, environ, out, options)) return 1;
         },
         .lock => |options| {
             if (!try lock.run(arena, io, out, options)) return 1;
@@ -235,6 +264,16 @@ test "deploy and lock" {
     try testing.expect(parsed.dirty);
     try testing.expectEqualStrings("a.yml", parsed.config_path);
     try testing.expectEqual(lock.Action.release, parse(&.{ "lock", "release" }).lock.action);
+}
+
+test "proxy adopt" {
+    try testing.expect(!parse(&.{ "proxy", "adopt" }).proxy.yes);
+    const parsed = parse(&.{ "proxy", "adopt", "--yes", "-c", "a.yml" }).proxy;
+    try testing.expect(parsed.yes);
+    try testing.expectEqualStrings("a.yml", parsed.config_path);
+    try testing.expectEqualStrings("proxy", parse(&.{"proxy"}).invalid);
+    try testing.expectEqualStrings("nope", parse(&.{ "proxy", "nope" }).invalid);
+    try testing.expectEqualStrings("--nope", parse(&.{ "proxy", "adopt", "--nope" }).invalid);
 }
 
 test "anything else is invalid, and names what" {

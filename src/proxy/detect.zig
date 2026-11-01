@@ -73,19 +73,15 @@ fn read(arena: Allocator, remote: Remote, proxy: Config.Proxy, start: Traefik) R
     try args.appendSlice(arena, parseStrings(arena, fields.next() orelse "null"));
     try args.appendSlice(arena, parseStrings(arena, fields.next() orelse "null"));
     const networks = std.mem.trim(u8, fields.next() orelse "", " \r");
-    var flags = traefik.parseFlags(args.items);
-
-    if (flags.config_file != null or !flags.found()) {
-        switch (try readSettings(arena, remote, start, flags.config_file orelse "")) {
-            .flags => |from_file| flags = from_file,
-            .stopped => |message| return .{ .stopped = message },
-        }
-    }
+    const flags = switch (try settingsOr(arena, remote, start, traefik.parseFlags(args.items))) {
+        .flags => |read_flags| read_flags.flags,
+        .stopped => |message| return .{ .stopped = message },
+    };
     if (flags.routes_file) {
         return stopped(arena, "Traefik `{s}` reads one route file, and a switch needs a folder (`providers.file.directory`). That change restarts Traefik and touches every app it serves: make it when that suits", .{name});
     }
     const routes = flags.routes_dir orelse {
-        return stopped(arena, "Traefik `{s}` has no routes folder (`providers.file.directory`). Adding it restarts Traefik and touches every app it serves: make it when that suits", .{name});
+        return stopped(arena, "Traefik `{s}` has no routes folder (`providers.file.directory`). `cowshed proxy adopt` adds it: that restarts Traefik and touches every app it serves, so it runs only when asked for", .{name});
     };
     if (flags.watch_off) {
         return stopped(arena, "Traefik `{s}` does not watch its routes folder (`providers.file.watch=false`): a switch would not be seen", .{name});
@@ -116,10 +112,30 @@ fn read(arena: Allocator, remote: Remote, proxy: Config.Proxy, start: Traefik) R
     return .{ .traefik = found };
 }
 
-const Settings = union(enum) {
-    flags: traefik.Flags,
+pub const Settings = union(enum) {
+    flags: struct {
+        flags: traefik.Flags,
+        /// Inside its container, when they came from a file.
+        settings_path: ?[]const u8 = null,
+    },
     stopped: []const u8,
 };
+
+/// How a running Traefik is set up, from its flags or else its settings file.
+pub fn readFlags(arena: Allocator, remote: Remote, found: Traefik) Remote.Error!Settings {
+    const inspected = try remote.run(arena, .{ .argv = try docker.inspectConfig(arena, found.id) });
+    if (!inspected.ok()) return .{ .stopped = try std.fmt.allocPrint(arena, "could not read Traefik's settings: {s}", .{lastLine(inspected.stderr)}) };
+    var fields = std.mem.splitScalar(u8, inspected.stdout, '\n');
+    var args: std.ArrayList([]const u8) = .empty;
+    try args.appendSlice(arena, parseStrings(arena, fields.next() orelse "null"));
+    try args.appendSlice(arena, parseStrings(arena, fields.next() orelse "null"));
+    return settingsOr(arena, remote, found, traefik.parseFlags(args.items));
+}
+
+fn settingsOr(arena: Allocator, remote: Remote, found: Traefik, flags: traefik.Flags) Remote.Error!Settings {
+    if (flags.config_file == null and flags.found()) return .{ .flags = .{ .flags = flags } };
+    return readSettings(arena, remote, found, flags.config_file orelse "");
+}
 
 /// Never says what the file holds: it may have secrets. Stays only in memory.
 fn readSettings(arena: Allocator, remote: Remote, found: Traefik, named: []const u8) Remote.Error!Settings {
@@ -141,7 +157,7 @@ fn readSettings(arena: Allocator, remote: Remote, found: Traefik, named: []const
         error.InvalidYaml => return .{ .stopped = try std.fmt.allocPrint(arena, "could not understand Traefik `{s}`'s `{s}`, line {d}: {s}", .{ name, path, failure.line, failure.message }) },
         else => |e| return e,
     };
-    return .{ .flags = traefik.parseSettings(root) };
+    return .{ .flags = .{ .flags = traefik.parseSettings(root), .settings_path = path } };
 }
 
 fn stopped(arena: Allocator, comptime format: []const u8, args: anytype) Allocator.Error!Outcome {
@@ -159,7 +175,7 @@ fn firstWord(text: []const u8) []const u8 {
     return words.next() orelse "";
 }
 
-fn parseStrings(arena: Allocator, json: []const u8) []const []const u8 {
+pub fn parseStrings(arena: Allocator, json: []const u8) []const []const u8 {
     const parsed = std.json.parseFromSliceLeaky(?[]const []const u8, arena, json, .{}) catch return &.{};
     return parsed orelse &.{};
 }

@@ -18,11 +18,14 @@ pub fn main(init: std.process.Init) !void {
 test {
     _ = cli;
     _ = @import("cli/init.zig");
+    _ = @import("cli/proxy.zig");
     _ = @import("cli/check.zig");
     _ = @import("cli/setup.zig");
     _ = @import("cli/deploy.zig");
     _ = @import("cli/lock.zig");
     _ = @import("cli/ops.zig");
+    _ = @import("deploy/adopt.zig");
+    _ = @import("proxy/adopt.zig");
     _ = @import("deploy/setup.zig");
     _ = @import("deploy/ops.zig");
     _ = @import("deploy/deploy.zig");

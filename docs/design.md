@@ -110,9 +110,15 @@ Look at the host first:
   are read, the file stays in memory and its contents are never shown: it may hold
   secrets. Never its environment, for the same reason. Configured by the environment
   or a TOML file: stop and say so.
-- **A Traefik without one:** stop and explain. Adding it means restarting Traefik
-  or recreating its container, which touches every other app on that host. Only
-  with the owner's explicit yes, never silently.
+- **A Traefik without one:** stop and explain. Adding it means recreating its
+  container, which touches every other app on that host. `cowshed proxy adopt --yes`
+  does that, with the owner's explicit yes, never `setup` or `deploy`: edits by line
+  so the owner's comments stay, a backup, the new settings tried in a throwaway
+  container, then only that service recreated with the same image. Labelled routes keep
+  working, as the Docker provider stays. Its API goes on, unpublished, to confirm
+  switches, which any container on its network can read. After the cut, each labelled
+  router must be enabled and each host answer no worse than before, or the files
+  are put back and Traefik recreated.
 - **Nothing on 80/443:** start our own, with a persisted `acme.json`.
 - **Anything else on 80/443:** stop with a clear message. See Moving a server.
 
