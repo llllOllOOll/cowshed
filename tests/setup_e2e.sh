@@ -21,6 +21,7 @@ exec /usr/bin/ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o
 WRAP
 chmod +x "$WORK/bin/ssh"
 export PATH="$WORK/bin:$PATH"
+export XDG_STATE_HOME="$WORK/state" # Logs of this run, not the user's
 
 docker rm -f "$NAME" >/dev/null 2>&1 || true
 docker run -d --privileged --name "$NAME" -p "127.0.0.1:$PORT:22" -e DOCKER_TLS_CERTDIR= cowshed-e2e-server >/dev/null

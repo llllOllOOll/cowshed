@@ -205,7 +205,7 @@ pub fn run(arena: Allocator, io: std.Io, environ: *const std.process.Environ.Map
             if (!try check.run(arena, io, out, options)) return 1;
         },
         .setup => |options| {
-            if (!try setup.run(arena, io, out, options)) return 1;
+            if (!try setup.run(arena, io, environ, out, options)) return 1;
         },
         .deploy => |options| {
             if (!try deploy.run(arena, io, environ, out, options)) return 1;

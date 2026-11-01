@@ -25,6 +25,7 @@ exec /usr/bin/ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o
 WRAP
 chmod +x "$WORK/bin/ssh"
 export PATH="$WORK/bin:$PATH"
+export XDG_STATE_HOME="$WORK/state" # Logs of this run, not the user's
 
 docker rm -f "$NAME" >/dev/null 2>&1 || true
 docker run -d --privileged --name "$NAME" -p "127.0.0.1:$SSH_PORT:22" -e DOCKER_TLS_CERTDIR= cowshed-e2e-server >/dev/null
@@ -159,6 +160,9 @@ cowshed proxy adopt --yes | tee "$WORK/out"
 inside touch /tmp/stop
 sleep 1
 grep -q "^adopted:" "$WORK/out" || fail "not adopted"
+grep -q "^check: other.example answers 200" "$WORK/out" || fail "the check was not shown"
+log=$(sed -n 's/^log: //p' "$WORK/out")
+grep -q "^adopted:" "$log" || fail "the local log lacks it"
 if grep -q file-secret "$WORK/out"; then fail "it showed the settings"; fi
 first=$(inside sh -c 'grep -v " 200$" /tmp/codes | head -1 | cut -d" " -f1')
 last=$(inside sh -c 'grep -v " 200$" /tmp/codes | tail -1 | cut -d" " -f1')

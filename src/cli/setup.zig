@@ -5,6 +5,7 @@ const Config = @import("../config/Config.zig");
 const Ssh = @import("../remote/Ssh.zig");
 const core = @import("../deploy/setup.zig");
 const check = @import("check.zig");
+const log_file = @import("log.zig");
 const Allocator = std.mem.Allocator;
 
 pub const Options = struct {
@@ -13,8 +14,11 @@ pub const Options = struct {
 };
 
 /// False when something is wrong; what is wrong has been written to `out`.
-pub fn run(arena: Allocator, io: std.Io, out: *std.Io.Writer, options: Options) !bool {
-    const config = try check.readConfig(arena, io, out, options.config_path) orelse return false;
+pub fn run(arena: Allocator, io: std.Io, environ: *const std.process.Environ.Map, screen: *std.Io.Writer, options: Options) !bool {
+    const config = try check.readConfig(arena, io, screen, options.config_path) orelse return false;
+    const log = try log_file.open(arena, io, environ, screen, config.service, "setup");
+    defer log.close() catch {};
+    const out = &log.writer;
     var ssh: Ssh = .{ .io = io, .user = config.ssh.user, .host = config.host, .port = config.ssh.port, .keys = config.ssh.keys };
     return core.run(arena, ssh.remote(), out, config, .{ .dry_run = options.dry_run }) catch |err| switch (err) {
         error.ConnectionFailed, error.TransportFailed => {

@@ -278,7 +278,11 @@ fn adopt(self: Run, facts: Facts, who: []const u8) Error!bool {
     // What the apps answer now, to compare with after.
     const labelled = try readLabels(self);
     const before = try hostCodes(self, labelled.hosts);
-    if (before == null) try self.out.writeAll("notice: no `curl` on the server: apps are checked through Traefik's routers only\n");
+    if (before) |codes| {
+        for (labelled.hosts, codes) |host, code| try self.out.print("before: {s} answers {s} (http, https)\n", .{ host, code });
+    } else {
+        try self.out.writeAll("notice: no `curl` on the server: apps are checked through Traefik's routers only\n");
+    }
 
     try self.out.writeAll("backup: copying\n");
     var backup_args: std.ArrayList([]const u8) = .empty;
@@ -310,10 +314,16 @@ fn adopt(self: Run, facts: Facts, who: []const u8) Error!bool {
         return self.stop("Compose could not recreate it: {s}", .{lastLine(up.stderr)});
     }
 
+    try self.out.print("check: waiting for {d} routers and {d} hosts as they were, up to {d} s\n", .{ labelled.routers.len, labelled.hosts.len, CONFIRM_LIMIT_S });
     if (try confirm(self, labelled, before)) |problem| {
         try self.out.print("check: {s}\n", .{problem});
         try restore(self, facts, backup_dir, true);
         return self.stop("the apps did not come back as they were: {s}. Everything was put back; the backup stays in {s}", .{ problem, backup_dir });
+    }
+    for (labelled.routers) |router| try self.out.print("check: router {s} enabled\n", .{router});
+    if (before != null) {
+        const now = try hostCodes(self, labelled.hosts) orelse &.{};
+        for (labelled.hosts, now) |host, code| try self.out.print("check: {s} answers {s} (http, https)\n", .{ host, code });
     }
     _ = try self.shell(APPEND_AUDIT, &.{try std.fmt.allocPrint(self.arena, "{s} adopted", .{who})});
     try self.out.print("adopted: routes folder {s}, backup in {s}\n", .{ ROUTES_MOUNT, backup_dir });
@@ -557,6 +567,9 @@ test "with --yes: backup, proof, then the switch, of that service only" {
     try testing.expect(h.fake.ran("docker rm -f cowshed-adopt-test"));
     try testing.expect(!h.fake.ran("-p 80"));
     try testing.expect(!h.fake.ran("restore"));
+    try h.says("before: op.example answers 200 301 (http, https)");
+    try h.says("check: router op@docker enabled");
+    try h.says("check: op.example answers 200 301 (http, https)");
     try h.says("adopted: routes folder /cowshed-routes");
     try h.noSecret();
     // The edited files went by stdin.

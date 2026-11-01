@@ -16,6 +16,9 @@ Cowshed's: `config/deploy.yml`, `.cowshed/secrets`, and the secrets kept out of 
 names, without running any secret's command. `--remote` also reaches the server and
 Docker. Changes nothing.
 
+`setup` and `proxy adopt` keep a copy of what they say on this machine, in
+`~/.local/state/cowshed/logs/`, and name the file at the end.
+
 **`cowshed setup [--dry-run]`** prepares a server, and is safe to run again: Docker if
 missing (needs root or sudo without a password), `~/.cowshed`, and Traefik if none
 runs. It uses a Traefik already there, set up by flags or a YAML settings file, and

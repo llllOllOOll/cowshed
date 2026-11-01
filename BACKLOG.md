@@ -23,7 +23,9 @@
       (`tests/monorepo_e2e.sh`)
 
 - [x] `cowshed proxy adopt`: a routes folder for a Traefik from one Compose file and a YAML
-      settings file, proven before the cut (`tests/proxy_e2e.sh`). Not yet on a real server
+      settings file, proven before the cut (`tests/proxy_e2e.sh`). Ran on a real server
+      with the owner (2026-11-01), about 2 s out, and was undone by hand
+- [x] `setup` and `proxy adopt` keep a log on this machine
 - [x] `volumes` on the app: every version, rollback and `exec`; `remove` leaves them.
       Server-sent events tested through a switch (`tests/deploy_e2e.sh`)
 - [x] `cowshed init`: a project's config and secrets file
@@ -38,6 +40,10 @@
 
 ## Open
 
+- [ ] `cowshed proxy restore`: undoes an adoption from its backup, with a plan and `--yes`,
+      also after a connection lost mid-way. Refused while an app of Cowshed's uses the
+      routes folder. The owner chose to leave it for later
+- [ ] Adopting, putting back after the cut for real: force an app worse in `tests/proxy_e2e.sh`
 - [ ] `cowshed proxy adopt` for a Traefik set up by flags, several Compose files, Swarm or
       a plain `docker run`: refused for now. Putting back after the cut has run only
       against the fake
