@@ -346,6 +346,46 @@ inside grep -qx ok /srv/e2e-data/migrated || fail "the migration did not run"
 if result exec printenv STEP >/dev/null 2>&1; then fail "the migration's variable reached the app"; fi
 grep -q hidden "$WORK/out" && fail "a secret in the output"
 rm "$migrate_config"
+
+echo "== backup: before the migration, kept in its folder, the oldest going"
+backup_config="$APP/config/backup.yml"
+backups=/root/.cowshed/backups/e2e
+count_backups() { inside sh -c "ls -1 $backups 2>/dev/null | wc -l" | tr -d ' '; }
+with_backup() {
+	{ cat "$APP/config/deploy.yml"; printf 'backup:\n  command: %s\n  keep: 2\n  timeout: %s\nmigrate:\n  command: sh -c \x27echo migrated >> /data/after-backup\x27\n' "$1" "$2"; } > "$backup_config"
+}
+inside rm -f /srv/e2e-data/after-backup
+old=$(inside docker ps --filter label=service=e2e --format '{{.Names}}')
+
+with_backup 'echo hidden-output; echo why-it-failed >&2; exit 7' 30
+if cowshed deploy --force -c "$backup_config" > "$WORK/out"; then fail "deployed past a failed backup"; fi
+grep -q "exit code 7" "$WORK/out" || fail "wrong reason: $(cat "$WORK/out")"
+grep -q why-it-failed "$WORK/out" || fail "it did not say why the backup failed"
+grep -q hidden-output "$WORK/out" && fail "the backup's output reached the screen"
+inside test ! -e /srv/e2e-data/after-backup || fail "it migrated after a failed backup"
+[ "$(count_backups)" = 0 ] || fail "a failed backup left a folder"
+
+with_backup 'true' 30
+if cowshed deploy --force -c "$backup_config" > "$WORK/out"; then fail "deployed past an empty backup"; fi
+grep -q "wrote nothing" "$WORK/out" || fail "wrong reason: $(cat "$WORK/out")"
+
+with_backup 'sleep 60' 2
+if cowshed deploy --force -c "$backup_config" > "$WORK/out"; then fail "deployed past a late backup"; fi
+grep -q "passed its 2 s" "$WORK/out" || fail "wrong reason: $(cat "$WORK/out")"
+[ "$(inside docker ps --filter label=service=e2e --format '{{.Names}}')" = "$old" ] || fail "a failed backup changed what runs"
+
+with_backup 'echo "$COWSHED_VERSION $COWSHED_IMAGE" > "$COWSHED_BACKUP_DIR/dump"' 30
+for round in 1 2 3; do
+	cowshed deploy --force -c "$backup_config" > "$WORK/out" || { cat "$WORK/out"; fail "the deploy with a backup failed"; }
+	sleep 1 # Folders are named by the second
+done
+grep -q "^backup: $backups/" "$WORK/out" || fail "it did not name the backup"
+[ "$(count_backups)" = 2 ] || fail "keep did not hold: $(count_backups)"
+[ "$(inside stat -c %a "$backups/$(inside ls -1 "$backups" | head -1)")" = 700 ] || fail "a backup is open to others"
+inside sh -c "cat $backups/*/dump" | grep -q "e2e-app:" || fail "the command did not get its variables"
+inside grep -q migrated /srv/e2e-data/after-backup || fail "it did not migrate after the backup"
+rm "$backup_config"
 cowshed remove --yes > /dev/null
+inside test -d "$backups" || fail "remove took the backups"
 
 echo "e2e passed"

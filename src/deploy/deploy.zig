@@ -117,6 +117,31 @@ const COLLECT_BLOBS =
     \\done
 ;
 
+/// `$1` the limit, `$2` how many stay, `$3` the service, `$4` the version, `$5` the image,
+/// `$6` the command. What it prints is dropped, as a dump there would flood the log;
+/// the end of what it says on failing is kept. A failed or empty folder goes, and only
+/// after a good one do old ones go.
+const RUN_BACKUP =
+    \\limit=$1; keep=$2; root="$HOME/.cowshed/backups/$3"
+    \\umask 077
+    \\dir="$root/$(date -u +%Y%m%dT%H%M%SZ)-$4"
+    \\mkdir -p "$dir" || exit 1
+    \\err=$(mktemp) || exit 1
+    \\COWSHED_BACKUP_DIR=$dir COWSHED_VERSION=$4 COWSHED_IMAGE=$5 timeout "$limit" sh -c "$6" >/dev/null 2>"$err" </dev/null
+    \\code=$?
+    \\if [ "$code" -ne 0 ]; then
+    \\  tail -n 5 "$err" >&2; rm -f "$err"; rm -rf "$dir"
+    \\  case "$code" in 124|143) exit 124;; esac
+    \\  exit "$code"
+    \\fi
+    \\rm -f "$err"
+    \\if [ -z "$(ls -A "$dir")" ]; then rmdir "$dir"; exit 125; fi
+    \\printf '%s, %s\n' "$dir" "$(du -sh "$dir" | cut -f1)"
+    \\ls -1 "$root" | sort -r | tail -n +"$((keep + 1))" | while read -r old; do rm -rf "${root:?}/$old"; done
+;
+const BACKUP_TIMED_OUT = 124;
+const BACKUP_EMPTY = 125;
+
 /// Whether what runs now was made from exactly these sources. If the server cannot
 /// say, no: the deploy goes on and meets the trouble itself.
 pub fn liveFrom(arena: Allocator, remote: Remote, service: []const u8, sources: []const u8) Remote.Error!bool {
@@ -198,6 +223,13 @@ fn deployLocked(self: Run, traefik: ?detect.Traefik) Error!bool {
         env_file = try writeEnvFile(self, name) orelse return false;
     }
 
+    if (config.backup) |backup| {
+        if (!try runBackup(self, backup)) {
+            _ = try self.ask(&.{ "sh", "-c", DELETE_ENV_FILE, "sh", name });
+            return false;
+        }
+    }
+
     if (config.migrate) |migrate| {
         if (!try runMigration(self, migrate, name, env_file, traefik)) {
             _ = try self.ask(&.{ "sh", "-c", DELETE_ENV_FILE, "sh", name });
@@ -245,6 +277,31 @@ fn deployLocked(self: Run, traefik: ?detect.Traefik) Error!bool {
     try self.say("prune: cleaning old versions", .{});
     try prune(self);
     try self.say("deployed {s}", .{version});
+    return true;
+}
+
+/// Last before anything writes to the data. Nothing has changed if it fails.
+fn runBackup(self: Run, backup: Config.Backup) Error!bool {
+    const config = self.config();
+    try self.say("backup: running, up to {d} s", .{backup.timeout_s});
+    const result = try self.ask(&.{
+        "sh",                                                                                 "-c",
+        RUN_BACKUP,                                                                           "sh",
+        try std.fmt.allocPrint(self.arena, "{d}", .{backup.timeout_s}),                       try std.fmt.allocPrint(self.arena, "{d}", .{backup.keep}),
+        config.service,                                                                       self.input.version,
+        try std.fmt.allocPrint(self.arena, "{s}:{s}", .{ config.image, self.input.version }), backup.command,
+    });
+    if (!result.ok()) {
+        try self.out.writeAll(result.stderr);
+        try self.audit("backup failed");
+        return switch (result.exit_code) {
+            BACKUP_TIMED_OUT => self.stop("the backup passed its {d} s: nothing changed, the old version keeps serving", .{backup.timeout_s}),
+            BACKUP_EMPTY => self.stop("the backup wrote nothing into `$COWSHED_BACKUP_DIR`: nothing changed, the old version keeps serving", .{}),
+            else => self.stop("the backup failed with exit code {d}: nothing changed, the old version keeps serving", .{result.exit_code}),
+        };
+    }
+    try self.say("backup: {s}", .{std.mem.trimEnd(u8, result.stdout, "\r\n")});
+    try self.audit("backed up");
     return true;
 }
 
@@ -755,6 +812,46 @@ test "the order: lock, image, container, health, route, confirm, stop the old, u
     try testing.expect(h.fake.ran("http://app-web-v2:80/up"));
     try testing.expect(!h.fake.ran("docker stop app-web-v2"));
     try h.says("deployed v2");
+}
+
+test "a backup: after sending, before the migration, and it names what it made" {
+    var h = harness();
+    defer h.arena.deinit();
+    try h.begin();
+    try h.on("COWSHED_BACKUP_DIR=", 0, "/root/.cowshed/backups/s/x, 40M\n");
+    try h.on("docker run --rm", 0, "");
+    var config = PROXIED;
+    config.backup = .{ .command = "dump-it", .keep = 2, .timeout_s = 60 };
+    config.migrate = .{ .command = "./app" };
+    try testing.expect(try h.deploy(config));
+    try h.before("COWSHED_BACKUP_DIR=", "docker run --rm");
+    try h.before("docker run --rm", "docker run -d");
+    try testing.expect(h.fake.ran("dump-it"));
+    try h.says("backup: /root/.cowshed/backups/s/x, 40M");
+}
+
+test "a backup that fails, is empty or runs out of time: nothing else happens" {
+    const cases = [_]struct { code: u8, says: []const u8 }{
+        .{ .code = 7, .says = "exit code 7" },
+        .{ .code = 124, .says = "passed its" },
+        .{ .code = 125, .says = "wrote nothing" },
+    };
+    for (cases) |case| {
+        var h = harness();
+        defer h.arena.deinit();
+        try h.begin();
+        try h.on("umask 077", 0, "/home/u/.cowshed/env/app-web-v2");
+        try h.on("COWSHED_BACKUP_DIR=", case.code, "");
+        var config = PROXIED;
+        config.backup = .{ .command = "dump-it" };
+        config.migrate = .{ .command = "./app" };
+        try testing.expect(!try h.deploy(config));
+        try testing.expect(!h.fake.ran("docker run --rm"));
+        try testing.expect(!h.fake.ran("docker run -d"));
+        try testing.expect(!h.fake.ran("docker stop app-web-v1"));
+        try testing.expect(h.fake.ran("rm -rf \"$HOME/.cowshed/locks/$1\""));
+        try h.says(case.says);
+    }
 }
 
 test "a migration: new image, after sending, before the new version, with the app's settings" {

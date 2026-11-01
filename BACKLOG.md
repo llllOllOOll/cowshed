@@ -25,6 +25,8 @@
 - [x] Every deploy builds from a clean copy of what is committed, not only with `branch` or
       `sources`. Before, a new file or one git ignores, such as `.env`, could enter an image
       unseen
+- [x] `backup`: a project's own command, on the server, before the migration; a failure, an empty
+      folder or the end of its time stops the deploy, and the newest stay. Not yet real
 - [x] `migrate`: once for each deploy, from the new image, before the new version starts; a
       failure or the end of its time stops the deploy (`tests/deploy_e2e.sh`). Not yet real
 - [x] A second app in production, beside others on a shared server (2026-11-01): adopting,

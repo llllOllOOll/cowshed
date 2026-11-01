@@ -115,7 +115,7 @@ prepared with `chown`. Copy a database from a consistent backup, not from the fi
 in use: SQLite in WAL mode, for one, keeps recent changes in `-wal` and `-shm` files beside
 the main one.
 
-**Back up before a deploy that migrates.** A migration changes the old version's
+**Back up before a deploy that migrates,** with `backup` in the config, or by hand as here. A migration changes the old version's
 data too, even if the new version then fails. The app's own backup command can run with the
 live version's settings and volumes, and the copy be taken off the server:
 
@@ -143,12 +143,38 @@ migrate:
     MIGRATE: "1"
 ```
 
-**Take a backup first,** yourself: Cowshed does not know your database. Then deploy, once:
+**The backup is in the deploy too.** Cowshed does not know your database, so you say how to copy it,
+once, and it runs on the server before every migration:
+
+```yaml
+backup:
+  command: docker exec my-db pg_dump -U me -Fc mydb > "$COWSHED_BACKUP_DIR/mydb.dump"
+```
+
+An app whose tool is in its image runs that image, with the volume and the folder mounted:
+
+```yaml
+backup:
+  command: >
+    docker run --rm -v /var/lib/my-app:/data -v "$COWSHED_BACKUP_DIR:/out"
+    "$COWSHED_IMAGE" ./my-app backup /out/my-app.db
+```
+
+Then every deploy, with the backup and the migration in it, is one command:
 
 ```bash
-ssh root@my-server 'my-backup-command'
 cowshed deploy
 ```
+
+- **The first deploy:** the command must cope with there being nothing to copy yet, or be added after
+  it. If it fails, nothing is deployed.
+- **A command using the new image runs the new code before any migration.** If that code migrates or
+  changes the data when it starts, the copy is already of the changed data. Check that its backup
+  command does neither.
+- **What it copies is what you wrote:** files beside a database, such as uploads, must be in the
+  command too. Try restoring one: Cowshed proves only that the folder is not empty.
+- **It stays on the server,** in `~/.cowshed/backups/<service>/`, with personal data if the app has
+  any. Copying it elsewhere is yours to arrange.
 
 - **It fails:** the old version keeps serving. What the migration did before failing stays, unless
   it undoes itself. Read its output, shown when it ends.

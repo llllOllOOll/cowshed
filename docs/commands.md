@@ -41,8 +41,8 @@ a YAML settings file; anything else it refuses, saying what to add by hand.
 
 **`cowshed deploy [--secrets <path>] [--dirty] [--force]`** builds the image on this
 machine, sends what the server lacks, starts the new version beside the old one, checks
-its health, moves the traffic, waits for the old one's connections and stops it. With `migrate`
-in the config, that runs once before the new version starts. Until the traffic moves, any failure
+its health, moves the traffic, waits for the old one's connections and stops it. With `backup` and
+`migrate` in the config, they run once, in that order, before the new version starts. Until the traffic moves, any failure
 leaves the old version untouched, though not what a migration has done to the data.
 
 A deploy is built from a clean copy of what is committed. Changed files, new files and

@@ -16,6 +16,8 @@ const DEFAULT_HEALTH_TIMEOUT_S = 5;
 const DEFAULT_DEPLOY_TIMEOUT_S = 30;
 const DEFAULT_DRAIN_TIMEOUT_S = 30;
 const DEFAULT_MIGRATE_TIMEOUT_S = 300;
+const DEFAULT_BACKUP_TIMEOUT_S = 600;
+const DEFAULT_BACKUP_KEEP = 5;
 const DEFAULT_CONTEXT = ".";
 const DEFAULT_DOCKERFILE = "Dockerfile";
 
@@ -58,6 +60,15 @@ pub const Builder = struct {
     before: ?[]const u8 = null,
 };
 
+/// Run on the server before each new version, and before `migrate`.
+pub const Backup = struct {
+    /// A shell command writing into `$COWSHED_BACKUP_DIR`.
+    command: []const u8,
+    /// How many of this app's backups stay.
+    keep: u32 = DEFAULT_BACKUP_KEEP,
+    timeout_s: u32 = DEFAULT_BACKUP_TIMEOUT_S,
+};
+
 /// Run once for each deploy, from the new image, before the new version starts.
 pub const Migrate = struct {
     command: []const u8,
@@ -92,6 +103,7 @@ cpus: ?[]const u8 = null,
 memory: ?[]const u8 = null,
 env: Env = .{},
 proxy: ?Proxy = null,
+backup: ?Backup = null,
 migrate: ?Migrate = null,
 ssh: Ssh = .{},
 builder: Builder = .{},
@@ -244,6 +256,17 @@ const Reader = struct {
         return env;
     }
 
+    fn readBackup(self: *Reader, root: yaml.Value) Allocator.Error!?Backup {
+        const entry = root.get("backup") orelse return null;
+        try self.checkKeys(entry.value, entry.line, "backup", &.{ "command", "keep", "timeout" });
+        if (entry.value != .map) return null;
+        const keep = try self.number(u32, entry.value, "keep", "backup", DEFAULT_BACKUP_KEEP);
+        if (keep == 0) try self.problem(entry.line, "`backup.keep` must be above 0", .{});
+        const timeout_s = try self.number(u32, entry.value, "timeout", "backup", DEFAULT_BACKUP_TIMEOUT_S);
+        if (timeout_s == 0) try self.problem(entry.line, "`backup.timeout` must be above 0", .{});
+        return .{ .command = try self.required(entry.value, "command", "backup", entry.line), .keep = keep, .timeout_s = timeout_s };
+    }
+
     fn readMigrate(self: *Reader, root: yaml.Value) Allocator.Error!?Migrate {
         const entry = root.get("migrate") orelse return null;
         try self.checkKeys(entry.value, entry.line, "migrate", &.{ "command", "env", "timeout" });
@@ -303,7 +326,7 @@ const Reader = struct {
             "service",        "image",         "servers",  "registry", "builder", "env",
             "proxy",          "ssh",           "boot",     "cpus",     "memory",  "accessories",
             "deploy_timeout", "drain_timeout", "replaces", "secrets",  "branch",  "secrets",
-            "sources",        "volumes",       "env_file", "migrate",
+            "sources",        "volumes",       "env_file", "migrate",  "backup",
         });
 
         var config: Config = .{
@@ -320,6 +343,7 @@ const Reader = struct {
             .volumes = try self.strings(root, "volumes", ""),
             .env = try self.readEnv(root, ""),
             .proxy = try self.readProxy(root, ""),
+            .backup = try self.readBackup(root),
             .migrate = try self.readMigrate(root),
             .deploy_timeout_s = try self.number(u32, root, "deploy_timeout", "", DEFAULT_DEPLOY_TIMEOUT_S),
             .drain_timeout_s = try self.number(u32, root, "drain_timeout", "", DEFAULT_DRAIN_TIMEOUT_S),
@@ -677,4 +701,18 @@ test "migrate: its command, variables and limit, and what it refuses" {
     try expectProblem(MINIMAL ++ "migrate:\n  env:\n    A: b\n", "`migrate.command` is required");
     try expectProblem(MINIMAL ++ "migrate:\n  command: a\n  nope: 1\n", "unknown option `migrate.nope`");
     try expectProblem(MINIMAL ++ "migrate:\n  command: a\n  timeout: 0\n", "`migrate.timeout` must be above 0");
+}
+
+test "backup: its command and limits, and what it refuses" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var problems: std.ArrayList(Problem) = .empty;
+    const config = try parse(a, MINIMAL ++ "backup:\n  command: dump > \"$COWSHED_BACKUP_DIR/db\"\n  keep: 2\n  timeout: 60\n", &problems);
+    try testing.expectEqualStrings("dump > \"$COWSHED_BACKUP_DIR/db\"", config.backup.?.command);
+    try testing.expectEqual(2, config.backup.?.keep);
+    try testing.expectEqual(60, config.backup.?.timeout_s);
+    try expectProblem(MINIMAL ++ "backup:\n  keep: 1\n", "`backup.command` is required");
+    try expectProblem(MINIMAL ++ "backup:\n  command: a\n  nope: 1\n", "unknown option `backup.nope`");
+    try expectProblem(MINIMAL ++ "backup:\n  command: a\n  keep: 0\n", "`backup.keep` must be above 0");
 }

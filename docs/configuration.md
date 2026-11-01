@@ -36,6 +36,10 @@ env:
     - DB_PASSWORD:PG_PASS # Seen as DB_PASSWORD, read from PG_PASS
 secrets: .cowshed/secrets # By default
 env_file: ~/.my_secrets   # Optional: variables the secrets file reads
+backup:                   # Optional: runs on the server before each new version
+  command: pg_dump mydb > "$COWSHED_BACKUP_DIR/db.sql"
+  keep: 5                 # How many stay, by default
+  timeout: 600            # Seconds, by default
 migrate:                  # Optional: runs before each new version
   command: ./my-app       # Replaces the image's CMD
   env:
@@ -69,6 +73,19 @@ use them together, for up to `drain_timeout` seconds: a database file must allow
 and a migration on start reaches the old version's data even if the new one then fails.
 A rollback changes the code, not what volumes hold. [Usage](usage.md#data-that-must-outlive-a-version)
 covers a first copy and backups.
+
+## Backups
+
+Cowshed does not know where an app keeps its data, so `backup.command` says how to copy it. It
+runs on the server, in a shell, as the SSH user, after the image arrives and before `migrate`. It
+must write into `$COWSHED_BACKUP_DIR`, a new private folder in
+`~/.cowshed/backups/<service>/<time>-<version>/`. `$COWSHED_VERSION` and `$COWSHED_IMAGE` name the
+new version, for a command that needs its image. The app's secrets are not given to it.
+
+Anything but exit code 0, an empty folder or the end of its time stops the deploy, with nothing
+changed. What it prints is dropped; the last lines of its errors are shown if it fails. After a
+good one, only the newest `keep` stay. `remove` and a rollback leave them. They hold the app's data
+and stay on the same disk: they protect from a bad migration, not from losing the server.
 
 ## Migrations
 
