@@ -36,11 +36,11 @@ env:
     - DB_PASSWORD:PG_PASS # Seen as DB_PASSWORD, read from PG_PASS
 secrets: .cowshed/secrets # By default
 env_file: ~/.my_secrets   # Optional: variables the secrets file reads
-backup:                   # Optional: runs on the server before each new version
+backup:                   # Optional: with `deploy --migrate`, on the server, first
   command: pg_dump mydb > "$COWSHED_BACKUP_DIR/db.sql"
   keep: 5                 # How many stay, by default
   timeout: 600            # Seconds, by default
-migrate:                  # Optional: runs before each new version
+migrate:                  # Optional: with `deploy --migrate`, before the new version
   command: ./my-app       # Replaces the image's CMD
   env:
     MIGRATE: "1"          # Only for this command
@@ -77,7 +77,8 @@ covers a first copy and backups.
 ## Backups
 
 Cowshed does not know where an app keeps its data, so `backup.command` says how to copy it. It
-runs on the server, in a shell, as the SSH user, after the image arrives and before `migrate`. It
+runs with `deploy --migrate`, on the server, in a shell, as the SSH user, after the image arrives
+and before `migrate`. It
 must write into `$COWSHED_BACKUP_DIR`, a new private folder in
 `~/.cowshed/backups/<service>/<time>-<version>/`. `$COWSHED_VERSION` and `$COWSHED_IMAGE` name the
 new version, for a command that needs its image. The app's secrets are not given to it.
@@ -89,10 +90,9 @@ and stay on the same disk: they protect from a bad migration, not from losing th
 
 ## Migrations
 
-`migrate.command` runs on every deploy, once, in a container of the new image, after it reaches
+With `deploy --migrate`, `migrate.command` runs once, in a container of the new image, after it reaches
 the server and before the new version starts. It has the app's variables, secrets, network and
-volumes, and `migrate.env` on top of them; the app never sees those. A command with nothing to do
-should end at once. Anything but exit code 0 stops the deploy, with the old version serving. Its
+volumes, and `migrate.env` on top of them; the app never sees those. Anything but exit code 0 stops the deploy, with the old version serving. Its
 output comes when it ends. A rollback runs nothing.
 
 Keep a variable that makes the app migrate and exit in `migrate.env`, never in `env`: the app

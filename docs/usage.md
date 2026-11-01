@@ -133,8 +133,8 @@ files, must return with it.
 
 ## Migrations
 
-Set `migrate` in `config/deploy.yml`, and every deploy runs it, from the new image, before the new
-version starts:
+Say once how the app migrates, in `config/deploy.yml`. A deploy that has a migration asks for it by
+name, and only then does it run, from the new image, before the new version starts:
 
 ```yaml
 migrate:
@@ -144,7 +144,7 @@ migrate:
 ```
 
 **The backup is in the deploy too.** Cowshed does not know your database, so you say how to copy it,
-once, and it runs on the server before every migration:
+once, and it runs on the server before the migration:
 
 ```yaml
 backup:
@@ -160,11 +160,16 @@ backup:
     "$COWSHED_IMAGE" ./my-app backup /out/my-app.db
 ```
 
-Then every deploy, with the backup and the migration in it, is one command:
+Then a deploy with a migration, its backup included, is one command, and any other stays as it was:
 
 ```bash
-cowshed deploy
+cowshed deploy --migrate    # This version has a migration
+cowshed deploy              # It has none: no backup, no migration
 ```
+
+**Forgetting `--migrate`** depends on the app. One that refuses to start with a migration pending
+fails its health check, and the old version keeps serving. One that migrates when it starts does so
+with no backup: such an app should refuse in production, and leave migrating to this command.
 
 - **The first deploy:** the command must cope with there being nothing to copy yet, or be added after
   it. If it fails, nothing is deployed.
@@ -318,7 +323,8 @@ leaves the old version serving.
 - One server and one role per project.
 - Proven on a real server: `proxy adopt`, a first certificate, a deploy with a volume, a second
   deploy and a rollback.
-- Not yet proven on a real server: server-sent events over HTTPS, `migrate`, and
+- Proven on a real server too: `backup` and `migrate`, with a real migration.
+- Not yet proven on a real server: server-sent events over HTTPS, and
   `proxy adopt` putting things back by itself after the cut, which has run only against a fake.
 
 ## For a coding agent

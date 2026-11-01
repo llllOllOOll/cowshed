@@ -326,21 +326,28 @@ migrate_config="$APP/config/migrate.yml"
 with_migrate() {
 	{ cat "$APP/config/deploy.yml"; printf 'migrate:\n  command: sh -c \x27echo "$STEP" >> /data/migrated; test -n "$TOKEN"; test "$STEP" = ok\x27\n  timeout: %s\n  env:\n    STEP: %s\n' "$2" "$1"; } > "$migrate_config"
 }
+if cowshed deploy --migrate > "$WORK/out"; then fail "--migrate went on with no migrate in the config"; fi
+grep -q "needs \`migrate\`" "$WORK/out" || fail "wrong reason: $(cat "$WORK/out")"
 with_migrate bad 30
-if cowshed deploy --force -c "$migrate_config" > "$WORK/out"; then fail "deployed past a failed migration"; fi
+if cowshed deploy --force --migrate -c "$migrate_config" > "$WORK/out"; then fail "deployed past a failed migration"; fi
 grep -q "the old version keeps serving" "$WORK/out" || fail "wrong reason: $(cat "$WORK/out")"
 [ "$(inside docker ps --filter label=service=e2e --format '{{.Names}}')" = "$old" ] || fail "a failed migration changed what runs"
 inside grep -qx bad /srv/e2e-data/migrated || fail "the migration did not reach the volume"
 [ -z "$(inside docker ps -aq --filter label=oneoff=e2e)" ] || fail "the migration's container stayed"
 
 { cat "$APP/config/deploy.yml"; printf 'migrate:\n  command: sleep 60\n  timeout: 2\n'; } > "$migrate_config"
-if cowshed deploy --force -c "$migrate_config" > "$WORK/out"; then fail "deployed past a migration out of time"; fi
+if cowshed deploy --force --migrate -c "$migrate_config" > "$WORK/out"; then fail "deployed past a migration out of time"; fi
 grep -q "perhaps half done" "$WORK/out" || fail "wrong reason: $(cat "$WORK/out")"
 [ "$(inside docker ps --filter label=service=e2e --format '{{.Names}}')" = "$old" ] || fail "a late migration changed what runs"
 [ -z "$(inside docker ps -aq --filter label=oneoff=e2e)" ] || fail "the late migration's container stayed"
 
+with_migrate plain 30
+cowshed deploy --force -c "$migrate_config" > "$WORK/out" || { cat "$WORK/out"; fail "the deploy with no --migrate failed"; }
+grep -q "no \`--migrate\`" "$WORK/out" || fail "it did not say there was no migration"
+if inside grep -qx plain /srv/e2e-data/migrated; then fail "it migrated with no --migrate"; fi
+old=$(inside docker ps --filter label=service=e2e --format '{{.Names}}')
 with_migrate ok 30
-cowshed deploy --force -c "$migrate_config" > "$WORK/out" || { cat "$WORK/out"; fail "the deploy with a migration failed"; }
+cowshed deploy --force --migrate -c "$migrate_config" > "$WORK/out" || { cat "$WORK/out"; fail "the deploy with a migration failed"; }
 inside grep -qx ok /srv/e2e-data/migrated || fail "the migration did not run"
 [ "$(inside docker ps --filter label=service=e2e --format '{{.Names}}')" != "$old" ] || fail "the new version did not go live"
 if result exec printenv STEP >/dev/null 2>&1; then fail "the migration's variable reached the app"; fi
@@ -358,7 +365,7 @@ inside rm -f /srv/e2e-data/after-backup
 old=$(inside docker ps --filter label=service=e2e --format '{{.Names}}')
 
 with_backup 'echo hidden-output; echo why-it-failed >&2; exit 7' 30
-if cowshed deploy --force -c "$backup_config" > "$WORK/out"; then fail "deployed past a failed backup"; fi
+if cowshed deploy --force --migrate -c "$backup_config" > "$WORK/out"; then fail "deployed past a failed backup"; fi
 grep -q "exit code 7" "$WORK/out" || fail "wrong reason: $(cat "$WORK/out")"
 grep -q why-it-failed "$WORK/out" || fail "it did not say why the backup failed"
 grep -q hidden-output "$WORK/out" && fail "the backup's output reached the screen"
@@ -366,17 +373,17 @@ inside test ! -e /srv/e2e-data/after-backup || fail "it migrated after a failed 
 [ "$(count_backups)" = 0 ] || fail "a failed backup left a folder"
 
 with_backup 'true' 30
-if cowshed deploy --force -c "$backup_config" > "$WORK/out"; then fail "deployed past an empty backup"; fi
+if cowshed deploy --force --migrate -c "$backup_config" > "$WORK/out"; then fail "deployed past an empty backup"; fi
 grep -q "wrote nothing" "$WORK/out" || fail "wrong reason: $(cat "$WORK/out")"
 
 with_backup 'sleep 60' 2
-if cowshed deploy --force -c "$backup_config" > "$WORK/out"; then fail "deployed past a late backup"; fi
+if cowshed deploy --force --migrate -c "$backup_config" > "$WORK/out"; then fail "deployed past a late backup"; fi
 grep -q "passed its 2 s" "$WORK/out" || fail "wrong reason: $(cat "$WORK/out")"
 [ "$(inside docker ps --filter label=service=e2e --format '{{.Names}}')" = "$old" ] || fail "a failed backup changed what runs"
 
 with_backup 'echo "$COWSHED_VERSION $COWSHED_IMAGE" > "$COWSHED_BACKUP_DIR/dump"' 30
 for round in 1 2 3; do
-	cowshed deploy --force -c "$backup_config" > "$WORK/out" || { cat "$WORK/out"; fail "the deploy with a backup failed"; }
+	cowshed deploy --force --migrate -c "$backup_config" > "$WORK/out" || { cat "$WORK/out"; fail "the deploy with a backup failed"; }
 	sleep 1 # Folders are named by the second
 done
 grep -q "^backup: $backups/" "$WORK/out" || fail "it did not name the backup"

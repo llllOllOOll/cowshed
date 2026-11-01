@@ -38,6 +38,8 @@ pub const Input = struct {
     /// Each by the name the container sees. Travels on stdin only.
     secrets: []const Secret = &.{},
     image: ImageSender,
+    /// Asked for by name: runs the config's backup and migration before the new version.
+    migrate: bool = false,
 };
 
 pub const Error = Remote.Error || Writer.Error || error{ImageFailed};
@@ -223,17 +225,18 @@ fn deployLocked(self: Run, traefik: ?detect.Traefik) Error!bool {
         env_file = try writeEnvFile(self, name) orelse return false;
     }
 
-    if (config.backup) |backup| {
-        if (!try runBackup(self, backup)) {
-            _ = try self.ask(&.{ "sh", "-c", DELETE_ENV_FILE, "sh", name });
-            return false;
+    if (self.input.migrate) {
+        if (config.backup) |backup| {
+            if (!try runBackup(self, backup)) {
+                _ = try self.ask(&.{ "sh", "-c", DELETE_ENV_FILE, "sh", name });
+                return false;
+            }
         }
-    }
-
-    if (config.migrate) |migrate| {
-        if (!try runMigration(self, migrate, name, env_file, traefik)) {
-            _ = try self.ask(&.{ "sh", "-c", DELETE_ENV_FILE, "sh", name });
-            return false;
+        if (config.migrate) |migrate| {
+            if (!try runMigration(self, migrate, name, env_file, traefik)) {
+                _ = try self.ask(&.{ "sh", "-c", DELETE_ENV_FILE, "sh", name });
+                return false;
+            }
         }
     }
 
@@ -735,6 +738,7 @@ const Sender = struct {
 };
 
 const Harness = struct {
+    migrating: bool = false,
     arena: std.heap.ArenaAllocator,
     fake: Fake = undefined,
     output: Writer.Allocating = undefined,
@@ -769,6 +773,7 @@ const Harness = struct {
             .who = "seven",
             .secrets = &.{.{ .name = "TOKEN", .value = "hidden-value" }},
             .image = .{ .ptr = &self.sender, .sendFn = Sender.send },
+            .migrate = self.migrating,
         });
     }
 
@@ -823,6 +828,7 @@ test "a backup: after sending, before the migration, and it names what it made" 
     var config = PROXIED;
     config.backup = .{ .command = "dump-it", .keep = 2, .timeout_s = 60 };
     config.migrate = .{ .command = "./app" };
+    h.migrating = true;
     try testing.expect(try h.deploy(config));
     try h.before("COWSHED_BACKUP_DIR=", "docker run --rm");
     try h.before("docker run --rm", "docker run -d");
@@ -845,6 +851,7 @@ test "a backup that fails, is empty or runs out of time: nothing else happens" {
         var config = PROXIED;
         config.backup = .{ .command = "dump-it" };
         config.migrate = .{ .command = "./app" };
+        h.migrating = true;
         try testing.expect(!try h.deploy(config));
         try testing.expect(!h.fake.ran("docker run --rm"));
         try testing.expect(!h.fake.ran("docker run -d"));
@@ -852,6 +859,19 @@ test "a backup that fails, is empty or runs out of time: nothing else happens" {
         try testing.expect(h.fake.ran("rm -rf \"$HOME/.cowshed/locks/$1\""));
         try h.says(case.says);
     }
+}
+
+test "without --migrate: no backup and no migration, whatever the config says" {
+    var h = harness();
+    defer h.arena.deinit();
+    try h.begin();
+    var config = PROXIED;
+    config.backup = .{ .command = "dump-it" };
+    config.migrate = .{ .command = "./app" };
+    try testing.expect(try h.deploy(config));
+    try testing.expect(!h.fake.ran("dump-it"));
+    try testing.expect(!h.fake.ran("docker run --rm"));
+    try testing.expect(h.fake.ran("docker run -d"));
 }
 
 test "a migration: new image, after sending, before the new version, with the app's settings" {
@@ -863,6 +883,7 @@ test "a migration: new image, after sending, before the new version, with the ap
     var config = PROXIED;
     config.migrate = .{ .command = "./app \"two words\"", .env = &.{.{ .name = "MIGRATE", .value = "1" }}, .timeout_s = 60 };
     config.volumes = &.{"/srv:/data"};
+    h.migrating = true;
     try testing.expect(try h.deploy(config));
     try h.before("umask 077", "sh 60 app-web-v2-migrate docker run");
     try h.before("sh 60 app-web-v2-migrate docker run", "docker run -d");
@@ -885,6 +906,7 @@ test "a migration that fails: no new version, and the old one untouched" {
     try h.on("sh 300 app-web-v2-migrate docker run", 3, "bad column\n");
     var config = PROXIED;
     config.migrate = .{ .command = "./app" };
+    h.migrating = true;
     try testing.expect(!try h.deploy(config));
     try testing.expect(!h.fake.ran("docker run -d"));
     try testing.expect(!h.fake.ran("mv \"$1/.$2.tmp\""));
@@ -903,6 +925,7 @@ test "a migration past its time: stopped and removed, the old one untouched" {
     try h.on("sh 300 app-web-v2-migrate docker run", 124, "");
     var config = PROXIED;
     config.migrate = .{ .command = "./app" };
+    h.migrating = true;
     try testing.expect(!try h.deploy(config));
     try testing.expect(!h.fake.ran("docker run -d"));
     try h.says("perhaps half done");

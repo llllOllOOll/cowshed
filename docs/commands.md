@@ -39,10 +39,10 @@ a YAML settings file; anything else it refuses, saying what to add by hand.
 
 ## Deploying
 
-**`cowshed deploy [--secrets <path>] [--dirty] [--force]`** builds the image on this
+**`cowshed deploy [--secrets <path>] [--dirty] [--force] [--migrate]`** builds the image on this
 machine, sends what the server lacks, starts the new version beside the old one, checks
-its health, moves the traffic, waits for the old one's connections and stops it. With `backup` and
-`migrate` in the config, they run once, in that order, before the new version starts. Until the traffic moves, any failure
+its health, moves the traffic, waits for the old one's connections and stops it. With `--migrate`, the
+config's `backup` and `migrate` run once, in that order, before the new version starts. Until the traffic moves, any failure
 leaves the old version untouched, though not what a migration has done to the data.
 
 A deploy is built from a clean copy of what is committed. Changed files, new files and
@@ -52,6 +52,7 @@ commits, it says so and stops.
 - `--dirty` ships this folder as it is, as a test: changes, new files and what git ignores,
   unless `.dockerignore` leaves them out.
 - `--force` deploys even if nothing changed.
+- `--migrate` runs the config's `backup` and `migrate`. Without it neither runs, and it says so.
 
 **`cowshed rollback <version>`** goes back to a version still on the server, with no
 build. If it fails its health it is stopped again, and what is live stays live.

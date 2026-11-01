@@ -35,6 +35,7 @@ pub const USAGE =
     \\    --secrets <path>       Another secrets file
     \\    --dirty                Ship this folder as it is, as a test
     \\    --force                Deploy even if nothing changed
+    \\    --migrate              Run the config's backup and migration before the new version
     \\  lock <status|release>   The deploy lock, for after an interrupted deploy
     \\    -c, --config <path>    Another config file
     \\  rollback <version>      Back to a version still on the server: no build
@@ -143,6 +144,8 @@ fn parseDeploy(args: []const []const u8) Parsed {
             options.dirty = true;
         } else if (eql(arg, "--force")) {
             options.force = true;
+        } else if (eql(arg, "--migrate")) {
+            options.migrate = true;
         } else if (eql(arg, "-c") or eql(arg, "--config")) {
             i += 1;
             if (i == args.len) return .{ .invalid = arg };
@@ -260,6 +263,8 @@ test "setup and its flags" {
 }
 
 test "deploy and lock" {
+    try testing.expect(parse(&.{ "deploy", "--migrate" }).deploy.migrate);
+    try testing.expect(!parse(&.{"deploy"}).deploy.migrate);
     const parsed = parse(&.{ "deploy", "--dirty", "-c", "a.yml" }).deploy;
     try testing.expect(parsed.dirty);
     try testing.expectEqualStrings("a.yml", parsed.config_path);

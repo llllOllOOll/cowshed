@@ -19,6 +19,8 @@ pub const Options = struct {
     dirty: bool = false,
     /// Deploys even if nothing changed.
     force: bool = false,
+    /// Runs the config's backup and migration before the new version.
+    migrate: bool = false,
 };
 
 const MAX_SECRETS_BYTES = 1024 * 1024;
@@ -51,6 +53,14 @@ pub fn run(arena: Allocator, io: std.Io, environ: *const std.process.Environ.Map
     const out = &log.writer;
     for (config.notices) |notice| try out.print("notice: {s}\n", .{notice});
     if (config.accessories.len > 0) try out.writeAll("notice: accessories are left as they are: Cowshed does not manage them yet\n");
+
+    if (options.migrate and config.migrate == null) {
+        try out.writeAll("stopped: `--migrate` needs `migrate` in the config: nothing changed\n");
+        return false;
+    }
+    if (!options.migrate and config.migrate != null) {
+        try out.writeAll("notice: no `--migrate`: no backup and no migration. If this version has one, deploy with it\n");
+    }
 
     var ssh: Ssh = .{ .io = io, .user = config.ssh.user, .host = config.host, .port = config.ssh.port, .keys = config.ssh.keys };
 
@@ -135,6 +145,7 @@ pub fn run(arena: Allocator, io: std.Io, environ: *const std.process.Environ.Map
         .who = local.who(arena, io, environ),
         .secrets = resolved,
         .image = .{ .ptr = &sender, .sendFn = send.Sender.send },
+        .migrate = options.migrate,
     }) catch |err| switch (err) {
         error.ConnectionFailed, error.TransportFailed => {
             try out.print("server {s}: {t}: {s}. See `cowshed lock status`\n", .{ config.host, err, ssh.connection_error });
