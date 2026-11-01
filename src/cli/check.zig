@@ -4,6 +4,7 @@
 const std = @import("std");
 const Config = @import("../config/Config.zig");
 const secrets = @import("../config/secrets.zig");
+const local = @import("../image/local.zig");
 const Remote = @import("../remote/Remote.zig");
 const Ssh = @import("../remote/Ssh.zig");
 const Allocator = std.mem.Allocator;
@@ -20,13 +21,21 @@ pub const Options = struct {
 const MAX_FILE_BYTES = 1024 * 1024;
 
 /// False when something is wrong; what is wrong has been written to `out`.
-pub fn run(arena: Allocator, io: std.Io, out: *std.Io.Writer, options: Options) !bool {
+pub fn run(arena: Allocator, io: std.Io, environ: *const std.process.Environ.Map, out: *std.Io.Writer, options: Options) !bool {
     const config = try readConfig(arena, io, out, options.config_path) orelse return false;
 
     try out.print("{s}: {s}, role {s}, host {s}\n", .{ options.config_path, config.service, config.role, config.host });
     for (config.notices) |notice| try out.print("notice: {s}\n", .{notice});
 
     var ok = try checkSecrets(arena, io, out, config, options.secrets_path orelse config.secrets orelse secrets.DEFAULT_PATH);
+    if (config.env_file) |written| {
+        // Only that it is there: running it is for a deploy.
+        const path = try local.expandHome(arena, environ, written);
+        std.Io.Dir.cwd().access(io, path, .{}) catch {
+            try out.print("`env_file` {s} is not there\n", .{path});
+            ok = false;
+        };
+    }
     if (options.remote) ok = try checkRemote(arena, io, out, config) and ok;
     return ok;
 }
@@ -117,6 +126,7 @@ test "a good config, a missing secret, and a bad option" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
+    var environ = std.process.Environ.Map.init(a);
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "good.yml", "service: s\nimage: i\nservers:\n  - h\nenv:\n  secret:\n    - A\n    - B:C\n");
@@ -126,16 +136,36 @@ test "a good config, a missing secret, and a bad option" {
 
     var output: std.Io.Writer.Allocating = .init(a);
     const secrets_path = try absolute(a, tmp, "secrets");
-    try testing.expect(try run(a, testing.io, &output.writer, .{ .config_path = try absolute(a, tmp, "good.yml"), .secrets_path = secrets_path }));
+    try testing.expect(try run(a, testing.io, &environ, &output.writer, .{ .config_path = try absolute(a, tmp, "good.yml"), .secrets_path = secrets_path }));
 
     output.clearRetainingCapacity();
-    try testing.expect(!try run(a, testing.io, &output.writer, .{ .config_path = try absolute(a, tmp, "good.yml"), .secrets_path = try absolute(a, tmp, "short") }));
+    try testing.expect(!try run(a, testing.io, &environ, &output.writer, .{ .config_path = try absolute(a, tmp, "good.yml"), .secrets_path = try absolute(a, tmp, "short") }));
     try testing.expect(std.mem.indexOf(u8, output.written(), "`C` is used by the config") != null);
 
     output.clearRetainingCapacity();
-    try testing.expect(!try run(a, testing.io, &output.writer, .{ .config_path = try absolute(a, tmp, "bad.yml") }));
+    try testing.expect(!try run(a, testing.io, &environ, &output.writer, .{ .config_path = try absolute(a, tmp, "bad.yml") }));
     try testing.expect(std.mem.indexOf(u8, output.written(), ":5: unknown option `nope`") != null);
 
     output.clearRetainingCapacity();
-    try testing.expect(!try run(a, testing.io, &output.writer, .{ .config_path = "does/not/exist.yml" }));
+    try testing.expect(!try run(a, testing.io, &environ, &output.writer, .{ .config_path = "does/not/exist.yml" }));
+}
+
+test "an env_file is looked for, not run" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var environ = std.process.Environ.Map.init(a);
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const marker = try absolute(a, tmp, "ran");
+    try writeFile(tmp.dir, "env", try std.fmt.allocPrint(a, "touch {s}\n", .{marker}));
+    const present = try std.fmt.allocPrint(a, "service: s\nimage: i\nservers:\n  - h\nenv_file: {s}\n", .{try absolute(a, tmp, "env")});
+    try writeFile(tmp.dir, "present.yml", present);
+    try writeFile(tmp.dir, "absent.yml", "service: s\nimage: i\nservers:\n  - h\nenv_file: /nowhere/env\n");
+
+    var output: std.Io.Writer.Allocating = .init(a);
+    try testing.expect(try run(a, testing.io, &environ, &output.writer, .{ .config_path = try absolute(a, tmp, "present.yml") }));
+    try testing.expectError(error.FileNotFound, tmp.dir.access(testing.io, "ran", .{}));
+    try testing.expect(!try run(a, testing.io, &environ, &output.writer, .{ .config_path = try absolute(a, tmp, "absent.yml") }));
+    try testing.expect(std.mem.indexOf(u8, output.written(), "`env_file` /nowhere/env is not there") != null);
 }

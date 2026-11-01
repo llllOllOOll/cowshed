@@ -141,12 +141,21 @@ pub fn run(arena: Allocator, remote: Remote, out: *Writer, config: Config, who: 
     if (facts.new_settings.len == 0) return true;
 
     try out.print("adopt: Traefik `{s}` belongs to Compose project `{s}`\n", .{ facts.name, facts.project });
-    try out.print("  {s}: adds `providers.file.directory: {s}` and `api.insecure: true` (its port stays unpublished)\n", .{ facts.settings_path, ROUTES_MOUNT });
+    try out.print("  {s}: adds `providers.file.directory: {s}` and `api.insecure: true`\n", .{ facts.settings_path, ROUTES_MOUNT });
+    if (edit.apiIsPrivate(arena, facts.new_settings)) {
+        try out.writeAll("  its API, with no password, answers only inside Traefik's container\n");
+    } else {
+        try out.writeAll("  notice: its API, with no password, is unpublished but open to every container on its networks: it shows routes, not secrets\n");
+    }
     try out.print("  {s}: mounts {s} on {s} in service `{s}`\n", .{ facts.compose_path, facts.routes_host, ROUTES_MOUNT, facts.service });
     try out.writeAll("  backs up those files and what Traefik mounts, certificates included, to ~/.cowshed/backups\n");
     try out.writeAll("  tries the new settings in a throwaway container, on no published port\n");
     try out.print("  recreates only `{s}`, same image: every app it serves is cut for some seconds\n", .{facts.name});
-    try out.writeAll("  checks those apps; if any got worse, puts everything back\n");
+    const labelled = try readLabels(self);
+    try out.print("  checks for up to {d} s; if any got worse, puts everything back:\n", .{CONFIRM_LIMIT_S});
+    for (labelled.routers) |router| try out.print("    router {s} is enabled\n", .{router});
+    for (labelled.hosts) |host| try out.print("    {s} answers `/` over http and https as before\n", .{host});
+    try out.writeAll("  does not check, so look yourself: other paths, WebSockets, routes from files, and what is in use, such as a call\n");
     if (!confirmed) {
         try out.writeAll("nothing changed. Run it again with `--yes`, at a time that suits every app on this server\n");
         return true;
@@ -157,7 +166,7 @@ pub fn run(arena: Allocator, remote: Remote, out: *Writer, config: Config, who: 
         .held => |holder| return self.stop("another adoption holds the lock: {s}", .{holder}),
     }
     defer lock.release(arena, remote, LOCK) catch {};
-    return adopt(self, facts, who);
+    return adopt(self, facts, who, labelled);
 }
 
 fn gather(self: Run, found: detect.Traefik) Error!?Facts {
@@ -274,9 +283,8 @@ fn absolute(arena: Allocator, working: []const u8, path: []const u8) Allocator.E
     return std.fmt.allocPrint(arena, "{s}/{s}", .{ base, bare });
 }
 
-fn adopt(self: Run, facts: Facts, who: []const u8) Error!bool {
+fn adopt(self: Run, facts: Facts, who: []const u8, labelled: edit.Labelled) Error!bool {
     // What the apps answer now, to compare with after.
-    const labelled = try readLabels(self);
     const before = try hostCodes(self, labelled.hosts);
     if (before) |codes| {
         for (labelled.hosts, codes) |host, code| try self.out.print("before: {s} answers {s} (http, https)\n", .{ host, code });
@@ -549,6 +557,10 @@ test "without --yes: says all, changes nothing" {
     try h.says("Compose project `openproject`");
     try h.says("every app it serves is cut");
     try h.says("Run it again with `--yes`");
+    try h.says("router op@docker is enabled");
+    try h.says("op.example answers `/`");
+    try h.says("does not check");
+    try h.says("answers only inside Traefik's container");
     try h.touchedNothing();
     try testing.expect(!h.fake.ran("cp -a"));
     try h.noSecret();

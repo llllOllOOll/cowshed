@@ -122,7 +122,7 @@ fn ensureProxy(self: Run, home: []const u8) Error!bool {
             }
             try self.out.writeByte('\n');
             if (traefik.isFloating(found.image)) {
-                try self.out.print("notice: `{s}` floats: recreating that container may bring another Traefik version\n", .{found.image});
+                try self.out.print("notice: `{s}` floats: recreating that container may bring another Traefik version. Pin one where it is defined, when a restart suits every app on it\n", .{found.image});
             }
             if (!found.api) {
                 try self.out.writeAll("notice: Traefik's API is off: a switch cannot be confirmed through it\n");

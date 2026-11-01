@@ -15,7 +15,7 @@ const Writer = std.Io.Writer;
 const RETAIN_STOPPED = 3;
 /// How long Traefik gets to show a route. A change took up to 2.3 s when tested.
 const CONFIRM_LIMIT_S = 15;
-const TRAEFIK_API = "http://localhost:8080/api/http/services";
+const TRAEFIK_API = "http://127.0.0.1:8080/api/http/services";
 const STATE_ESTABLISHED = "01";
 /// How often a wait says it is still waiting.
 const PROGRESS_EVERY_S = 5;
@@ -650,7 +650,7 @@ const Harness = struct {
         try self.on("docker ps -a", 0, "app-web-v1\trunning\tv1\n");
         try self.on("docker inspect --format {{.State.Running}}", 0, "true\n");
         try self.on("docker inspect --format {{.State.Pid}}", 0, "42\n");
-        try self.on("wget -qO- http://localhost:8080", 0, NEW_ROUTE_SHOWN);
+        try self.on("wget -qO- http://127.0.0.1:8080", 0, NEW_ROUTE_SHOWN);
         // No route yet, unless a test says so.
         try self.on("cat \"$1/$2\"", 1, "");
     }
@@ -707,8 +707,8 @@ test "the order: lock, image, container, health, route, confirm, stop the old, u
     try h.before("mkdir \"$d\"", "docker run");
     try h.before("docker run", "wget -q -O /dev/null");
     try h.before("wget -q -O /dev/null", "mv \"$1/.$2.tmp\"");
-    try h.before("mv \"$1/.$2.tmp\"", "wget -qO- http://localhost:8080");
-    try h.before("wget -qO- http://localhost:8080", "docker stop app-web-v1");
+    try h.before("mv \"$1/.$2.tmp\"", "wget -qO- http://127.0.0.1:8080");
+    try h.before("wget -qO- http://127.0.0.1:8080", "docker stop app-web-v1");
     try h.before("docker stop app-web-v1", "rm -rf \"$HOME/.cowshed/locks/$1\"");
     try testing.expect(h.fake.ran("http://app-web-v2:80/up"));
     try testing.expect(!h.fake.ran("docker stop app-web-v2"));
@@ -826,7 +826,7 @@ test "Traefik not taking the route, a first deploy: the route removed, old untou
     var h = harness();
     defer h.arena.deinit();
     try h.begin();
-    try h.on("wget -qO- http://localhost:8080", 1, "");
+    try h.on("wget -qO- http://127.0.0.1:8080", 1, "");
     try testing.expect(!try h.deploy(PROXIED));
     try h.says("did not take the new route");
     try testing.expect(h.fake.ran("rm -f \"$1/$2\""));
@@ -839,7 +839,7 @@ test "Traefik not taking the route: the previous one written back" {
     defer h.arena.deinit();
     try h.begin();
     try h.on("cat \"$1/$2\"", 0, "the old route");
-    try h.on("wget -qO- http://localhost:8080", 0, "{\"url\":\"http://app-web-v1:80\"}");
+    try h.on("wget -qO- http://127.0.0.1:8080", 0, "{\"url\":\"http://app-web-v1:80\"}");
     try testing.expect(!try h.deploy(PROXIED));
     const last = h.fake.calls.items;
     var restored = false;
@@ -890,7 +890,7 @@ test "the same version again takes a new name: the live one keeps its own" {
     defer h.arena.deinit();
     try h.begin();
     try h.on("docker ps -a", 0, "app-web-v2\trunning\tv2\napp-web-v2-2\texited\tv2\n");
-    try h.on("wget -qO- http://localhost:8080", 0, "http://app-web-v2-3:80");
+    try h.on("wget -qO- http://127.0.0.1:8080", 0, "http://app-web-v2-3:80");
     try testing.expect(try h.deploy(PROXIED));
     try testing.expect(h.fake.ran("--name app-web-v2-3"));
     try testing.expect(h.fake.ran("docker stop app-web-v2"));
@@ -973,7 +973,7 @@ test "rollback: starts the stopped one, proves it, switches, stops the live one"
     defer h.arena.deinit();
     try h.begin();
     try h.on("docker ps -a", 0, "app-web-v2\trunning\tv2\napp-web-v1-2\texited\tv1\napp-web-v1\texited\tv1\n");
-    try h.on("wget -qO- http://localhost:8080", 0, "http://app-web-v1-2:80");
+    try h.on("wget -qO- http://127.0.0.1:8080", 0, "http://app-web-v1-2:80");
     try testing.expect(try rollbackTo(&h, "v1"));
     try h.before("docker start app-web-v1-2", "wget -q -O /dev/null");
     try h.before("wget -q -O /dev/null", "mv \"$1/.$2.tmp\"");

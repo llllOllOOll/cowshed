@@ -137,6 +137,7 @@ before_other=$(other_id)
 echo "== the plan: says it all, changes nothing"
 cowshed proxy adopt | tee "$WORK/out"
 grep -q "Run it again with" "$WORK/out" || fail "no plan"
+grep -q "other.example answers" "$WORK/out" || fail "the plan does not name what it checks"
 if grep -q file-secret "$WORK/out"; then fail "it showed the settings"; fi
 [ "$before_files" = "$(files)" ] || fail "the plan changed files"
 [ "$before_traefik" = "$(traefik_id)" ] || fail "the plan touched Traefik"
@@ -161,6 +162,8 @@ cowshed proxy adopt --yes | tee "$WORK/out"
 inside touch /tmp/stop
 sleep 1
 grep -q "^adopted:" "$WORK/out" || fail "not adopted"
+inside docker exec traefik wget -qO- http://127.0.0.1:8080/api/version >/dev/null || fail "the API does not answer inside"
+if inside docker run --rm --network web alpine wget -qO- -T 3 http://traefik:8080/api/version >/dev/null 2>&1; then fail "a neighbour reads the API"; fi
 grep -q "^check: other.example answers 200" "$WORK/out" || fail "the check was not shown"
 log=$(sed -n 's/^log: //p' "$WORK/out")
 grep -q "^adopted:" "$log" || fail "the local log lacks it"

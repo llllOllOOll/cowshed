@@ -10,6 +10,8 @@ pub const OWN_IMAGE = "traefik:3.6.6";
 pub const OWN_NAME = "cowshed-traefik";
 pub const OWN_NETWORK = "cowshed";
 pub const OWN_RESOLVER = "letsencrypt";
+/// Traefik serves its API on the entrypoint named `traefik`.
+pub const PRIVATE_API_ADDRESS = "127.0.0.1:8080";
 const OWN_ROUTES_MOUNT = "/etc/traefik/routes";
 const OWN_ACME_MOUNT = "/etc/letsencrypt";
 
@@ -105,6 +107,13 @@ pub fn parseSettings(root: yaml.Value) Flags {
     return flags;
 }
 
+/// The address of the entrypoint that serves Traefik's API, if the file sets one.
+pub fn apiAddress(root: yaml.Value) ?[]const u8 {
+    const entrypoints = field(root, "entrypoints") orelse return null;
+    const own = field(entrypoints, "traefik") orelse return null;
+    return scalar(own, "address");
+}
+
 /// Traefik's keys are case-insensitive.
 fn field(value: yaml.Value, key: []const u8) ?yaml.Value {
     if (value != .map) return null;
@@ -156,16 +165,17 @@ pub fn listensOn(listing: []const u8, port: u16) bool {
 pub fn ownRunCommand(arena: Allocator, routes: []const u8, acme: []const u8, acme_email: ?[]const u8) Allocator.Error![]const []const u8 {
     var argv: std.ArrayList([]const u8) = .empty;
     try argv.appendSlice(arena, &.{
-        "docker",                         "run",                                                               "-d",
-        "--name",                         OWN_NAME,                                                            "--restart",
-        "unless-stopped",                 "--network",                                                         OWN_NETWORK,
-        "-p",                             "80:80",                                                             "-p",
-        "443:443",                        "-v",                                                                try std.fmt.allocPrint(arena, "{s}:{s}", .{ routes, OWN_ROUTES_MOUNT }),
-        "-v",                             try std.fmt.allocPrint(arena, "{s}:{s}", .{ acme, OWN_ACME_MOUNT }), OWN_IMAGE,
-        "--global.checkNewVersion=false", "--global.sendAnonymousUsage=false",
-        // Reached only from inside the network: its port is not published.
+        "docker",                                                "run",                                                               "-d",
+        "--name",                                                OWN_NAME,                                                            "--restart",
+        "unless-stopped",                                        "--network",                                                         OWN_NETWORK,
+        "-p",                                                    "80:80",                                                             "-p",
+        "443:443",                                               "-v",                                                                try std.fmt.allocPrint(arena, "{s}:{s}", .{ routes, OWN_ROUTES_MOUNT }),
+        "-v",                                                    try std.fmt.allocPrint(arena, "{s}:{s}", .{ acme, OWN_ACME_MOUNT }), OWN_IMAGE,
+        "--global.checkNewVersion=false",                        "--global.sendAnonymousUsage=false",
+        // Its API answers only inside its own container: no neighbour reads it.
                                         "--api.insecure=true",
-        "--entrypoints.web.address=:80",  "--entrypoints.websecure.address=:443",                              "--providers.file.directory=" ++ OWN_ROUTES_MOUNT,
+        "--entrypoints.traefik.address=" ++ PRIVATE_API_ADDRESS, "--entrypoints.web.address=:80",                                     "--entrypoints.websecure.address=:443",
+        "--providers.file.directory=" ++ OWN_ROUTES_MOUNT,
     });
     if (acme_email) |email| {
         const prefix = "--certificatesresolvers." ++ OWN_RESOLVER ++ ".acme.";

@@ -202,7 +202,7 @@ pub fn run(arena: Allocator, io: std.Io, environ: *const std.process.Environ.Map
             if (!try init.run(arena, io, out, options)) return 1;
         },
         .check => |options| {
-            if (!try check.run(arena, io, out, options)) return 1;
+            if (!try check.run(arena, io, environ, out, options)) return 1;
         },
         .setup => |options| {
             if (!try setup.run(arena, io, environ, out, options)) return 1;

@@ -12,6 +12,7 @@ const Allocator = std.mem.Allocator;
 const Writer = std.Io.Writer;
 
 const AUDIT_LINES = "50";
+const CREATED_SHOWN = "2026-11-01 15:04".len;
 const READ_AUDIT = "tail -n " ++ AUDIT_LINES ++ " \"$HOME/.cowshed/audit-$1.log\" 2>/dev/null";
 const REMOVE_ROUTE = "rm -f \"$1/$2\"";
 const ENV_FILE_IF_ANY =
@@ -23,7 +24,7 @@ const REMOVE_FILES =
 
 pub const Error = Remote.Error || Writer.Error;
 
-const Row = struct { name: []const u8, state: []const u8, version: []const u8, sources: []const u8 = "" };
+const Row = struct { name: []const u8, state: []const u8, version: []const u8, sources: []const u8 = "", created: []const u8 = "" };
 
 fn parseRows(arena: Allocator, listing: []const u8) Allocator.Error![]const Row {
     var rows: std.ArrayList(Row) = .empty;
@@ -33,7 +34,7 @@ fn parseRows(arena: Allocator, listing: []const u8) Allocator.Error![]const Row 
         const name = fields.next() orelse continue;
         const state = fields.next() orelse continue;
         const version = fields.next() orelse continue;
-        try rows.append(arena, .{ .name = name, .state = state, .version = version, .sources = fields.next() orelse "" });
+        try rows.append(arena, .{ .name = name, .state = state, .version = version, .sources = fields.next() orelse "", .created = fields.next() orelse "" });
     }
     return rows.items;
 }
@@ -67,6 +68,8 @@ pub fn versions(arena: Allocator, remote: Remote, out: *Writer, config: Config) 
     for (rows) |row| {
         const mark: []const u8 = if (std.mem.eql(u8, row.state, "running")) "live" else "    ";
         try out.print("{s}  {s}  {s}", .{ mark, row.version, row.name });
+        // `2026-11-01 15:04:05 -0300 -03`: to the minute, in the server's time.
+        if (row.created.len > 0) try out.print("  {s}", .{row.created[0..@min(row.created.len, CREATED_SHOWN)]});
         if (row.sources.len > 0) try out.print("  ({s})", .{row.sources});
         try out.writeByte('\n');
     }

@@ -1,5 +1,6 @@
 //! A copy of what a command says, on this machine, for commands that change a server.
-//! It holds what the screen shows, so what never reaches the screen never reaches it.
+//! It holds what Cowshed says on the screen, so what never reaches the screen never
+//! reaches it. A build's own output goes straight to the screen and is not in it.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;

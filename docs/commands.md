@@ -16,8 +16,9 @@ Cowshed's: `config/deploy.yml`, `.cowshed/secrets`, and the secrets kept out of 
 names, without running any secret's command. `--remote` also reaches the server and
 Docker. Changes nothing.
 
-`setup` and `proxy adopt` keep a copy of what they say on this machine, in
-`~/.local/state/cowshed/logs/`, and name the file at the end.
+`setup`, `proxy adopt`, `deploy` and `rollback` keep a copy of what they say on this machine, in
+`~/.local/state/cowshed/logs/`, and name the file at the end. A build's own output stays on the
+screen.
 
 **`cowshed setup [--dry-run]`** prepares a server, and is safe to run again: Docker if
 missing (needs root or sudo without a password), `~/.cowshed`, and Traefik if none
@@ -32,7 +33,7 @@ tries the new settings in a throwaway container; then recreates Traefik alone, w
 same image. **That cuts every app it serves for some seconds**, so `--yes` is the
 server owner's decision, per server, at a time that suits them. If a router from a
 container's labels is not enabled afterwards, or such a host answers `/` worse, it puts
-everything back. Nothing else is checked, and `RESTORE FAILED` is explained in
+everything back. The plan names those routers and hosts. Nothing else is checked, and `RESTORE FAILED` is explained in
 [usage](usage.md#adopting-a-traefik). It handles a Traefik from one Compose file with
 a YAML settings file; anything else it refuses, saying what to add by hand.
 
@@ -56,8 +57,8 @@ build. If it fails its health it is stopped again, and what is live stays live.
 
 ## Looking
 
-**`cowshed versions`** lists what is on the server, what is live, and what each was made
-from.
+**`cowshed versions`** lists what is on the server, what is live, when each was made, in the
+server's time, and what it was made from.
 
 **`cowshed logs [--lines <n>]`** shows the live container's latest logs (100 by default).
 

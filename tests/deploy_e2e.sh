@@ -26,6 +26,7 @@ WRAP
 chmod +x "$WORK/bin/ssh"
 export PATH="$WORK/bin:$PATH"
 export XDG_CACHE_HOME="$WORK/cache" # Clean copies of this run, not the user's
+export XDG_STATE_HOME="$WORK/state" # Logs of this run, not the user's
 
 docker rm -f "$NAME" >/dev/null 2>&1 || true
 docker run -d --privileged --name "$NAME" -p "127.0.0.1:$SSH_PORT:22" -p "127.0.0.1:$WEB_PORT:80" -e DOCKER_TLS_CERTDIR= cowshed-e2e-server >/dev/null
@@ -107,6 +108,9 @@ echo "== a first deploy, replacing a container from before, with only what is co
 inside docker run -d --name legacy alpine sleep 600 >/dev/null
 cowshed deploy | tee "$WORK/out" | grep -vE '^#|^$|^ *$' | cut -c1-120 | tail -12
 [ "$(serving)" = one ] || fail "not serving one: $(serving)"
+log=$(sed -n 's/^log: //p' "$WORK/out")
+grep -q "^source:" "$log" || fail "the deploy's local log lacks it"
+grep -q hidden "$log" && fail "a secret in the deploy's local log"
 grep -q "not part of this deploy" "$WORK/out" || fail "it did not say what stayed out"
 grep -q "new, not in git, left out: untracked.txt" "$WORK/out" || fail "it did not name the new file"
 if grep -q "left out: ignored.env" "$WORK/out"; then fail "it named a file git ignores"; fi
@@ -211,6 +215,7 @@ inside sh -c 'for d in $(cat /root/.cowshed/images/e2e/*.blobs | sort -u); do te
 echo "== versions"
 cowshed versions | tee "$WORK/versions" | cut -c1-60
 grep -q "^live" "$WORK/versions" || fail "nothing marked live"
+grep -qE "^live.* 20[0-9]{2}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}" "$WORK/versions" || fail "no date in versions"
 target=$(grep -v "^live" "$WORK/versions" | head -1 | awk '{print $1}')
 
 echo "== rollback under traffic: no build, seconds"
@@ -294,6 +299,23 @@ cowshed remove --yes | tail -1
 [ -z "$(inside docker image ls -q e2e-app)" ] || fail "images left"
 inside docker inspect legacy >/dev/null || fail "legacy was removed"
 inside test -f /root/.cowshed/audit-e2e.log || fail "the audit log went too"
+
+echo "== env_file: for a deploy with no source first"
+printf 'export E2E_FROM_ENV=hidden-from-file\necho hidden-noise\n' > "$WORK/env"
+env_config="$APP/config/env.yml"
+{ cat "$APP/config/deploy.yml"; echo "env_file: $WORK/nowhere"; } > "$env_config"
+if cowshed check -c "$env_config" > "$WORK/out"; then fail "check passed with no env_file"; fi
+if cowshed deploy --force -c "$env_config" > "$WORK/out"; then fail "deployed with no env_file"; fi
+grep -q "env_file.*is not there" "$WORK/out" || fail "wrong reason: $(cat "$WORK/out")"
+grep -q "^build:" "$WORK/out" && fail "it built before finding the env_file missing"
+{ cat "$APP/config/deploy.yml"; echo "env_file: $WORK/env"; } > "$env_config"
+(unset E2E_FROM_ENV; cowshed deploy --force -c "$env_config") > "$WORK/out" || { cat "$WORK/out"; fail "the deploy with env_file failed"; }
+grep -q hidden "$WORK/out" && fail "a value of the env_file in the output"
+[ "$(result exec printenv OTHER)" = hidden-from-file ] || fail "the env_file's value did not arrive"
+E2E_FROM_ENV=hidden-wins cowshed deploy --force -c "$env_config" > "$WORK/out" || { cat "$WORK/out"; fail "the deploy with env_file failed"; }
+[ "$(result exec printenv OTHER)" = hidden-wins ] || fail "the environment did not win over the env_file"
+rm "$env_config"
+cowshed remove --yes > /dev/null
 [ "$(inside cat /srv/e2e-data/mark)" = kept ] || fail "the volume's data went too"
 
 echo "e2e passed"

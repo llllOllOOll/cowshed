@@ -115,7 +115,7 @@ fn appendWords(arena: Allocator, argv: *std.ArrayList([]const u8), text: []const
 }
 
 pub fn listAll(arena: Allocator, service: []const u8) Allocator.Error![]const []const u8 {
-    return arena.dupe([]const u8, &.{ "docker", "ps", "-a", "--filter", try std.fmt.allocPrint(arena, "label=service={s}", .{service}), "--format", "{{.Names}}\t{{.State}}\t{{.Label \"version\"}}\t{{.Label \"sources\"}}" });
+    return arena.dupe([]const u8, &.{ "docker", "ps", "-a", "--filter", try std.fmt.allocPrint(arena, "label=service={s}", .{service}), "--format", "{{.Names}}\t{{.State}}\t{{.Label \"version\"}}\t{{.Label \"sources\"}}\t{{.CreatedAt}}" });
 }
 
 /// Only images Cowshed built, which carry the service's label: older ones of the

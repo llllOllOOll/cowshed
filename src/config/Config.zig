@@ -91,6 +91,8 @@ drain_timeout_s: u32 = DEFAULT_DRAIN_TIMEOUT_S,
 replaces: ?[]const u8 = null,
 /// The secrets file, if not the default.
 secrets: ?[]const u8 = null,
+/// A shell file setting the variables the secrets file reads. It runs on this machine.
+env_file: ?[]const u8 = null,
 /// Builds from this branch, whatever is checked out here. HEAD otherwise.
 branch: ?[]const u8 = null,
 /// What makes up the project besides this folder, also from other repositories,
@@ -280,7 +282,7 @@ const Reader = struct {
             "service",        "image",         "servers",  "registry", "builder", "env",
             "proxy",          "ssh",           "boot",     "cpus",     "memory",  "accessories",
             "deploy_timeout", "drain_timeout", "replaces", "secrets",  "branch",  "secrets",
-            "sources",        "volumes",
+            "sources",        "volumes",       "env_file",
         });
 
         var config: Config = .{
@@ -291,6 +293,7 @@ const Reader = struct {
             .memory = try self.string(root, "memory", ""),
             .replaces = try self.string(root, "replaces", ""),
             .secrets = try self.string(root, "secrets", ""),
+            .env_file = try self.string(root, "env_file", ""),
             .branch = try self.string(root, "branch", ""),
             .sources = try self.strings(root, "sources", ""),
             .volumes = try self.strings(root, "volumes", ""),

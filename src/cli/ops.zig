@@ -9,6 +9,7 @@ const deploy = @import("../deploy/deploy.zig");
 const core = @import("../deploy/ops.zig");
 const local = @import("../image/local.zig");
 const check = @import("check.zig");
+const log_file = @import("log.zig");
 const Allocator = std.mem.Allocator;
 
 const DEFAULT_LOG_LINES = "100";
@@ -89,8 +90,11 @@ pub fn parse(args: []const []const u8) Parsed {
 }
 
 /// False when something is wrong; what is wrong has been written to `out`.
-pub fn run(arena: Allocator, io: std.Io, environ: *const std.process.Environ.Map, out: *std.Io.Writer, options: Options) !bool {
-    const config = try check.readConfig(arena, io, out, options.config_path) orelse return false;
+pub fn run(arena: Allocator, io: std.Io, environ: *const std.process.Environ.Map, screen: *std.Io.Writer, options: Options) !bool {
+    const config = try check.readConfig(arena, io, screen, options.config_path) orelse return false;
+    const log = if (options.action == .rollback) try log_file.open(arena, io, environ, screen, config.service, "rollback") else null;
+    defer if (log) |file| file.close() catch {};
+    const out = if (log) |file| &file.writer else screen;
     var ssh: Ssh = .{ .io = io, .user = config.ssh.user, .host = config.host, .port = config.ssh.port, .keys = config.ssh.keys };
     const remote = ssh.remote();
     const who = local.who(arena, io, environ);

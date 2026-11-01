@@ -82,17 +82,15 @@ API_TOKEN=$MY_API_TOKEN
 DB_PASSWORD=$(pass show my-app/db)
 ```
 
-If your variables live in a file of your own, load it for that command:
+If your variables live in a file of your own, name it in `config/deploy.yml`, and a deploy runs
+it with `sh`, for that command alone:
 
-```fish
-source ~/.my_secrets; and cowshed deploy     # fish
+```yaml
+env_file: ~/.my_secrets
 ```
 
-```bash
-source ~/.my_secrets && cowshed deploy       # bash, zsh
-```
-
-Variables must be exported for Cowshed to see them.
+Only the path is in the repository. Only `deploy` needs secrets: `exec` and `rollback` use what the
+version already has. Without `env_file`, load your file first, exporting its variables.
 
 ## Data that must outlive a version
 
@@ -171,6 +169,8 @@ them as they are: try a long connection through it.
 
 ## Adopting a Traefik
 
+The plan, without `--yes`, names the routers and hosts it will check.
+
 Before the cut it tries the new settings in a throwaway container, and if that fails nothing
 has changed. After the cut, for up to 30 s, it compares each app with how it was:
 
@@ -201,6 +201,22 @@ cd <its folder> && docker compose up -d <service>
 
 Leave `mount-<n>` where it is unless a file there was damaged: an old `acme.json`, for one, would
 lose the certificates issued since. These steps are the server owner's to run or approve.
+
+**Its API.** Cowshed needs Traefik's API to confirm a switch, and the API has no password. A new
+API answers only inside Traefik's container. An API the settings already had, an entrypoint named
+`traefik` or settings with no `entryPoints` stay as they are, and then the API is unpublished but
+open to every container on Traefik's networks; the plan says so. It shows routes, not secrets. To
+close it, add this to the settings when a restart suits every app:
+
+```yaml
+entryPoints:
+  traefik:
+    address: "127.0.0.1:8080"
+```
+
+**A floating image.** `traefik:latest` may bring another version the next time the container is
+recreated, by anyone. Adopting keeps the image in use, with no pull. Pinning a version where it is
+defined is the owner's decision, and takes effect at a restart.
 
 There is no command to undo an adoption that succeeded yet. The same steps do it, and cut the
 apps again. **Apps Cowshed publishes on that Traefik then lose their routes and go off the air,**
@@ -246,9 +262,10 @@ leaves the old version serving.
   build can enter the next. If a stale one is suspected, delete that folder.
 - **A clean copy has no git submodules.** A build that needs them fails.
 - One server and one role per project.
-- Not yet proven on a real server: a first certificate for a new domain, a deploy with a
-  volume, and server-sent events over HTTPS. `proxy adopt` has run on one and was undone by
-  hand; putting things back by itself after the cut has run only in tests, without a server.
+- Proven on a real server: `proxy adopt`, a first certificate, a deploy with a volume, a second
+  deploy and a rollback.
+- Not yet proven on a real server: server-sent events over HTTPS, a deploy that migrates, and
+  `proxy adopt` putting things back by itself after the cut, which has run only against a fake.
 
 ## For a coding agent
 
@@ -256,7 +273,8 @@ Follow the steps above, and these rules:
 
 - **Never print a secret's value,** nor put one on a command line, in a log or in a commit.
   Refer to secrets by name. `cowshed exec` returns all a command prints: a command that shows
-  a token or password is for the owner to run, not you.
+  a token or password is for the owner to run in their own terminal: a command run through your
+  session, even by them, puts its output in front of you.
 - **Ask the owner first, each time,** for `cowshed proxy adopt --yes`, `cowshed remove --yes`,
   `cowshed lock release`, `cowshed stop` and `cowshed rollback`. On a server other apps share,
   also for `cowshed setup`, the first `cowshed deploy` and any copy into a volume. An earlier

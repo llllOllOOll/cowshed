@@ -49,6 +49,24 @@ pub fn build(arena: Allocator, io: Io, builder: Config.Builder, service: []const
     return term == .exited and term.exited == 0;
 }
 
+/// `~/` as the user's home, for a path written in the config.
+pub fn expandHome(arena: Allocator, environ: *const std.process.Environ.Map, path: []const u8) Allocator.Error![]const u8 {
+    if (!std.mem.startsWith(u8, path, "~/")) return path;
+    const home = environ.get("HOME") orelse return path;
+    return std.fmt.allocPrint(arena, "{s}/{s}", .{ home, path[2..] });
+}
+
+/// What a shell file sets, as `NAME=value` joined by NUL, for this command alone. What
+/// the file prints or says on failing is dropped: it may hold values. Null if it fails.
+pub fn loadEnvFile(arena: Allocator, io: Io, path: []const u8) !?[]const u8 {
+    // `.` searches the PATH for a bare name.
+    const script = "set -a; . \"$1\" >/dev/null 2>&1 && env -0";
+    const where = if (std.mem.indexOfScalar(u8, path, '/') == null) try std.fmt.allocPrint(arena, "./{s}", .{path}) else path;
+    const result = process.run(arena, io, &.{ "sh", "-c", script, "sh", where }, null) catch return null;
+    if (result.exitCode() != 0) return null;
+    return result.stdout;
+}
+
 pub const Source = struct {
     /// Its folder's name.
     name: []const u8,
@@ -214,6 +232,23 @@ test "only what git does not know counts as new, a new folder as one" {
     try std.testing.expectEqualStrings("logo.svg", found[0]);
     try std.testing.expectEqualStrings("public/brand/", found[1]);
     try std.testing.expectEqual(0, (try untrackedIn(arena_state.allocator(), "")).len);
+}
+
+test "an env file: what it sets, and nothing it prints or says" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}/env", .{tmp.sub_path});
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "env", .data = "PLAIN=one\nexport DONE=two\necho noise\n" });
+    const loaded = (try loadEnvFile(a, std.testing.io, path)).?;
+    try std.testing.expect(std.mem.indexOf(u8, loaded, "PLAIN=one\x00") != null);
+    try std.testing.expect(std.mem.indexOf(u8, loaded, "DONE=two\x00") != null);
+    try std.testing.expect(std.mem.indexOf(u8, loaded, "noise") == null);
+
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "bad", .data = "exit 1\n" });
+    try std.testing.expect(try loadEnvFile(a, std.testing.io, try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}/bad", .{tmp.sub_path})) == null);
 }
 
 test "a fingerprint names each source and what last touched it" {

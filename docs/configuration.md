@@ -35,6 +35,7 @@ env:
     - API_TOKEN           # From the secrets file
     - DB_PASSWORD:PG_PASS # Seen as DB_PASSWORD, read from PG_PASS
 secrets: .cowshed/secrets # By default
+env_file: ~/.my_secrets   # Optional: variables the secrets file reads
 builder:
   before: tools/stage.sh  # Optional: run first, with COWSHED_VERSION set
   context: .              # By default
@@ -101,6 +102,15 @@ LITERAL='$not expanded'
 Only the secrets the config uses are expanded, and commands run on this machine. A value
 cannot hold a line break. Keep the file out of git.
 
-A variable must be exported when the command runs. If yours live in a file of your own, load
-it for that command: `source ~/.my_secrets; and cowshed deploy` in fish,
-`source ~/.my_secrets && cowshed deploy` in bash or zsh.
+A `$VARIABLE` comes from the environment, or else from `env_file`:
+
+```yaml
+env_file: ~/.my_secrets
+```
+
+`deploy` runs that file with `sh`, on this machine, for that command alone, and only if the
+config uses secrets. Plain assignments and `export` both work; it must be valid for `sh`, and it
+is executed, so it must be yours. What is already in the environment wins. A missing or failing
+file stops the deploy before any build, and what the file prints is dropped. `check` only looks
+that it is there. Commands written as `$(...)` in the secrets file do not see its variables.
+Only `deploy` reads secrets: `exec` and `rollback` use what the version already has.

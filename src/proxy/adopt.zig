@@ -55,10 +55,39 @@ fn childIndent(lines: []const Line, index: usize) ?usize {
     return null;
 }
 
-/// Traefik's settings with a file provider on `folder` and its API reachable from
-/// inside its network. Null when this file's shape cannot take it safely.
+/// With the API newly on, it answers only inside the container, if the file lists its
+/// entrypoints: adding that list where there is none would take Traefik's default away.
+fn keepApiPrivate(arena: Allocator, text: []const u8) Allocator.Error![]const u8 {
+    const lines = try linesOf(arena, text);
+    for (lines, 0..) |line, i| {
+        if (line.indent != 0) continue;
+        const value = valueOf(line.text, "entrypoints") orelse continue;
+        if (value.len > 0) return text;
+        const child = childIndent(lines, i) orelse return text;
+        for (lines[i + 1 ..]) |below| {
+            if (below.text.len == 0) continue;
+            if (below.indent <= line.indent) break;
+            if (below.indent == child and valueOf(below.text, "traefik") != null) return text;
+        }
+        const block = try std.fmt.allocPrint(arena, "{s}traefik:\n{s}address: \"{s}\"\n", .{ try spaces(arena, child), try spaces(arena, child * 2), traefik.PRIVATE_API_ADDRESS });
+        return insertAt(arena, text, line.end, block);
+    }
+    return text;
+}
+
+/// Whether these settings keep Traefik's API inside its container.
+pub fn apiIsPrivate(arena: Allocator, settings: []const u8) bool {
+    var failure: yaml.Failure = undefined;
+    const root = yaml.parseWith(arena, settings, &failure, .{ .foreign = true }) catch return false;
+    return std.mem.eql(u8, traefik.apiAddress(root) orelse return false, traefik.PRIVATE_API_ADDRESS);
+}
+
+/// Traefik's settings with a file provider on `folder` and its API on. Null when this
+/// file's shape cannot take it safely.
 pub fn editSettings(arena: Allocator, source: []const u8, folder: []const u8) Allocator.Error!?[]const u8 {
     var text = source;
+    var failure_before: yaml.Failure = undefined;
+    const had_api = traefik.parseSettings(yaml.parseWith(arena, source, &failure_before, .{ .foreign = true }) catch return null).api;
 
     var lines = try linesOf(arena, text);
     var providers: ?usize = null;
@@ -97,6 +126,7 @@ pub fn editSettings(arena: Allocator, source: []const u8, folder: []const u8) Al
             if (valueOf(line.text, "insecure") != null) {
                 const replaced = try std.fmt.allocPrint(arena, "{s}insecure: true\n", .{try spaces(arena, line.indent)});
                 text = try std.mem.concat(arena, u8, &.{ text[0..line.start], replaced, text[line.end..] });
+                if (!had_api) text = try keepApiPrivate(arena, text);
                 return checked(arena, source, text, folder);
             }
         }
@@ -104,6 +134,7 @@ pub fn editSettings(arena: Allocator, source: []const u8, folder: []const u8) Al
     } else {
         text = try insertAt(arena, text, text.len, "api:\n  insecure: true\n");
     }
+    if (!had_api) text = try keepApiPrivate(arena, text);
     return checked(arena, source, text, folder);
 }
 
@@ -253,6 +284,27 @@ test "settings: the folder and the API added, all else as it was" {
     try testing.expect(std.mem.indexOf(u8, edited, "api:\n  insecure: true\n  dashboard: true\n") != null);
     try testing.expect(std.mem.indexOf(u8, edited, "providers:\n  file:\n    directory: /routes\n  docker:\n    # Only what asks to be served\n") != null);
     try testing.expect(std.mem.indexOf(u8, edited, "email: me@x") != null);
+}
+
+test "settings: a new API answers only inside its container" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const edited = (try editSettings(a, SERVER_SETTINGS, "/routes")).?;
+    try testing.expect(std.mem.indexOf(u8, edited, "entryPoints:\n  traefik:\n    address: \"127.0.0.1:8080\"\n  http:") != null);
+    try testing.expect(apiIsPrivate(a, edited));
+
+    // The owner's own API and entrypoints stay as they are.
+    const had_api = (try editSettings(a, "api:\n  insecure: true\nentryPoints:\n  http:\n    address: \":80\"\n", "/routes")).?;
+    try testing.expect(!apiIsPrivate(a, had_api));
+    const had_entrypoint = (try editSettings(a, "entryPoints:\n  traefik:\n    address: \":9000\"\n", "/routes")).?;
+    try testing.expect(!apiIsPrivate(a, had_entrypoint));
+    try testing.expect(std.mem.indexOf(u8, had_entrypoint, ":9000") != null);
+
+    // No list of entrypoints: adding one would take Traefik's default away.
+    const no_list = (try editSettings(a, "log:\n  level: INFO\n", "/routes")).?;
+    try testing.expect(std.mem.indexOf(u8, no_list, "entryPoints") == null);
+    try testing.expect(!apiIsPrivate(a, no_list));
 }
 
 test "settings: sections missing, another indentation, API off" {

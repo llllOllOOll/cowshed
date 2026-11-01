@@ -4,8 +4,8 @@ Cowshed deploys Docker containers to a server over SSH, as one Zig binary. The
 server needs nothing of Cowshed's: no agent, no panel and no proxy of its own.
 
 **Status:** early. Every command is tested on a throwaway server, and `setup` and
-`deploy` have run on a real one, for one app. `proxy adopt` has run on a real server too,
-and was undone by hand. The plan is in [BACKLOG.md](BACKLOG.md). Using it, for people and
+`deploy` have run on real ones, and so have `proxy adopt`, a first certificate, a volume and a
+rollback, beside other apps. The plan is in [BACKLOG.md](BACKLOG.md). Using it, for people and
 coding agents: [usage](docs/usage.md), [commands](docs/commands.md),
 [configuration](docs/configuration.md). How it works: [design](docs/design.md).
 

@@ -9,6 +9,7 @@ const core = @import("../deploy/deploy.zig");
 const local = @import("../image/local.zig");
 const send = @import("../image/send.zig");
 const check = @import("check.zig");
+const log_file = @import("log.zig");
 const Allocator = std.mem.Allocator;
 
 pub const Options = struct {
@@ -26,10 +27,14 @@ const MAX_NEW_SHOWN = 20;
 const SecretsContext = struct {
     io: std.Io,
     environ: *const std.process.Environ.Map,
+    /// From `env_file`, `NAME=value` joined by NUL.
+    loaded: []const u8 = "",
 
+    /// What is already in the environment wins.
     fn getEnv(ptr: *anyopaque, name: []const u8) ?[]const u8 {
         const self: *SecretsContext = @ptrCast(@alignCast(ptr));
-        return self.environ.get(name);
+        if (self.environ.get(name)) |value| return value;
+        return valueIn(self.loaded, name);
     }
 
     fn shell(ptr: *anyopaque, arena: Allocator, command: []const u8) anyerror![]const u8 {
@@ -39,8 +44,11 @@ const SecretsContext = struct {
 };
 
 /// False when something is wrong; what is wrong has been written to `out`.
-pub fn run(arena: Allocator, io: std.Io, environ: *const std.process.Environ.Map, out: *std.Io.Writer, options: Options) !bool {
-    const config = try check.readConfig(arena, io, out, options.config_path) orelse return false;
+pub fn run(arena: Allocator, io: std.Io, environ: *const std.process.Environ.Map, screen: *std.Io.Writer, options: Options) !bool {
+    const config = try check.readConfig(arena, io, screen, options.config_path) orelse return false;
+    const log = try log_file.open(arena, io, environ, screen, config.service, "deploy");
+    defer log.close() catch {};
+    const out = &log.writer;
     for (config.notices) |notice| try out.print("notice: {s}\n", .{notice});
     if (config.accessories.len > 0) try out.writeAll("notice: accessories are left as they are: Cowshed does not manage them yet\n");
 
@@ -148,6 +156,18 @@ fn resolveSecrets(arena: Allocator, io: std.Io, environ: *const std.process.Envi
     for (config.env.secret) |entry| try wanted.append(arena, secrets.sourceOf(entry));
 
     var context_state: SecretsContext = .{ .io = io, .environ = environ };
+    if (config.env_file) |written| {
+        const env_path = try local.expandHome(arena, environ, written);
+        std.Io.Dir.cwd().access(io, env_path, .{}) catch {
+            try out.print("stopped: `env_file` {s} is not there\n", .{env_path});
+            return null;
+        };
+        context_state.loaded = try local.loadEnvFile(arena, io, env_path) orelse {
+            try out.print("stopped: `env_file` {s} failed when run by `sh`\n", .{env_path});
+            return null;
+        };
+        try out.print("secrets: variables from {s}\n", .{env_path});
+    }
     var failure: secrets.Failure = undefined;
     const values = secrets.resolve(arena, source, wanted.items, .{
         .userdata = &context_state,
@@ -172,6 +192,15 @@ fn resolveSecrets(arena: Allocator, io: std.Io, environ: *const std.process.Envi
     return out_secrets.items;
 }
 
+fn valueIn(loaded: []const u8, name: []const u8) ?[]const u8 {
+    var entries = std.mem.splitScalar(u8, loaded, 0);
+    while (entries.next()) |entry| {
+        const equals = std.mem.indexOfScalar(u8, entry, '=') orelse continue;
+        if (std.mem.eql(u8, entry[0..equals], name)) return entry[equals + 1 ..];
+    }
+    return null;
+}
+
 /// Told, not fatal: DNS or a first certificate may take longer than this looks.
 fn lookFromOutside(arena: Allocator, io: std.Io, out: *std.Io.Writer, config: Config) !void {
     const proxy = config.proxy orelse return;
@@ -182,4 +211,11 @@ fn lookFromOutside(arena: Allocator, io: std.Io, out: *std.Io.Writer, config: Co
     } else {
         try out.print("notice: from outside: {s} did not answer\n", .{url});
     }
+}
+
+test "a variable from an env file, by its whole name" {
+    const loaded = "AB=1\x00A=two=2\x00";
+    try std.testing.expectEqualStrings("two=2", valueIn(loaded, "A").?);
+    try std.testing.expectEqualStrings("1", valueIn(loaded, "AB").?);
+    try std.testing.expect(valueIn(loaded, "B") == null);
 }

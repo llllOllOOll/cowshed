@@ -25,6 +25,12 @@
 - [x] Every deploy builds from a clean copy of what is committed, not only with `branch` or
       `sources`. Before, a new file or one git ignores, such as `.env`, could enter an image
       unseen
+- [x] A second app in production, beside others on a shared server (2026-11-01): adopting,
+      certificate, volume, a second deploy and a rollback, from `docs/usage.md` alone
+- [x] Traefik's API answers only inside its container, when Cowshed turns it on or starts it
+- [x] The plan of `proxy adopt` names the routers and hosts it will check
+- [x] `env_file`: a deploy needs no `source` first
+- [x] `deploy` and `rollback` keep a log on this machine; `versions` shows when each was made
 - [x] A deploy names the new files it leaves out, not only how many differ
 - [x] `docs/usage.md`: the way from nothing to a deploy, what to do when it stops, and the
       rules for a coding agent
@@ -49,16 +55,17 @@
 - [ ] `cowshed proxy restore`: undoes an adoption from its backup, with a plan and `--yes`,
       also after a connection lost mid-way. Refused while an app of Cowshed's uses the
       routes folder. The owner chose to leave it for later
+- [ ] An API that was adopted open on a server stays open until its owner restarts Traefik:
+      `docs/usage.md` says how
+- [ ] Pruning keeps stopped containers by when they were made, not when they last ran: after a
+      rollback to an old version and some deploys, the version just replaced can be gone
+- [ ] Copying data into a volume by a command, with a checksum and in the audit log: `scp` has done
+      for one project
 - [ ] Adopting, putting back after the cut for real: force an app worse in `tests/proxy_e2e.sh`
 - [ ] `cowshed proxy adopt` for a Traefik set up by flags, several Compose files, Swarm or
       a plain `docker run`: refused for now. Putting back after the cut has run only
       against the fake
-- [ ] `env_file` in `config/deploy.yml` (`env_file: ~/.my_secrets`), so a deploy needs no
-      `source` first. Only the path is in the repository. Cowshed runs the file as `source`
-      would and uses the result for that command alone. What is already in the environment
-      wins. Loaded only if the project uses secrets; a missing file stops before any build,
-      naming the path. Values never printed. The file is executed, so it must be trusted.
-      Later, if wanted: a user-wide default in `~/.config/cowshed/config`
+- [ ] `env_file`: a user-wide default in `~/.config/cowshed/config`, if wanted
 - [ ] A clean copy has no git submodules: the build fails if it needs them
 - [ ] A clean copy lacks what git ignores on the first deploy: a build needing it (Orbitville's
       assets?) must fetch it itself
@@ -68,8 +75,8 @@
 - [ ] A server that ignores SIGTERM takes `docker stop`'s full 10 s (Arena's did: exit 137)
 - [ ] A large part being sent shows no progress of its own
 - [ ] Installing Docker has run only against the fake: try it on a clean VM
-- [ ] Our own Traefik's Let's Encrypt certificates: not issued yet; the VPS's Traefik
-      issued one through a file route
+- [ ] Our own Traefik's Let's Encrypt certificates: not issued yet; adopted Traefiks have
+      issued them through a file route
 - [ ] A Traefik set up by a TOML file or its environment: `setup` stops, read them
 - [ ] A routes folder not writable from inside Traefik: the helper container
 - [ ] Hooks for games: `pre_switch`, `post_switch`. `builder.before` covers the check before sending
