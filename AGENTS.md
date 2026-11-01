@@ -1,8 +1,10 @@
 # Cowshed: agent guide
 
 Cowshed deploys Docker containers to a server over SSH, as one Zig 0.17 binary.
-README.md is the overview, `docs/commands.md` and `docs/configuration.md` its use,
-`docs/design.md` the design, BACKLOG.md the plan.
+README.md is the overview, `docs/usage.md`, `docs/commands.md` and
+`docs/configuration.md` its use, `docs/design.md` the design, BACKLOG.md the plan.
+This file is for working on Cowshed; an agent using it on a project follows
+`docs/usage.md`.
 
 ## Commands
 

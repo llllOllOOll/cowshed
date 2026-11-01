@@ -30,8 +30,10 @@ what it would change, and changes nothing. With `--yes` it backs up the settings
 Compose file and what Traefik mounts, certificates included, to `~/.cowshed/backups`;
 tries the new settings in a throwaway container; then recreates Traefik alone, with the
 same image. **That cuts every app it serves for some seconds**, so `--yes` is the
-server owner's decision, per server, at a time that suits them. If an app got worse
-afterwards, it puts everything back. It handles a Traefik from one Compose file with
+server owner's decision, per server, at a time that suits them. If a router from a
+container's labels is not enabled afterwards, or such a host answers `/` worse, it puts
+everything back. Nothing else is checked, and `RESTORE FAILED` is explained in
+[usage](usage.md#adopting-a-traefik). It handles a Traefik from one Compose file with
 a YAML settings file; anything else it refuses, saying what to add by hand.
 
 ## Deploying

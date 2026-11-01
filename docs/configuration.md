@@ -51,7 +51,8 @@ replaces: old-container   # Optional: from before Cowshed; stopped, never remove
 ```
 
 A list of hosts can stand directly under `servers`, and a plain map under `env` is all
-clear variables. `registry` and `boot` are read and ignored, with a notice.
+clear variables. `registry`, `boot` and `proxy.forward_headers` are read and ignored, with
+a notice: Traefik sets the forwarding headers.
 
 ## Volumes
 
@@ -60,6 +61,8 @@ by Docker, as root, so an app running as another user needs it prepared. Cowshed
 nothing into them, and `remove` leaves them. During a switch the old and the new version
 use them together, for up to `drain_timeout` seconds: a database file must allow that,
 and a migration on start reaches the old version's data even if the new one then fails.
+A rollback changes the code, not what volumes hold. [Usage](usage.md#data-that-must-outlive-a-version)
+covers a first copy and backups.
 
 ## What goes into the image
 
@@ -67,6 +70,9 @@ Only what is committed: a deploy builds from a clean copy of the repository, in
 `~/.cache/cowshed/clones/<service>/`. A build needing what git ignores must fetch or make
 it itself; `builder.before` runs in that copy. The config and the secrets file are read
 from this folder. `cowshed deploy --dirty` builds this folder instead, as a test.
+
+The copy is kept between deploys, so what git ignores there stays: a file made or fetched by
+one build can enter the next. Deleting the folder starts it afresh.
 
 ## A project among others, or using other repositories
 
@@ -94,3 +100,7 @@ LITERAL='$not expanded'
 
 Only the secrets the config uses are expanded, and commands run on this machine. A value
 cannot hold a line break. Keep the file out of git.
+
+A variable must be exported when the command runs. If yours live in a file of your own, load
+it for that command: `source ~/.my_secrets; and cowshed deploy` in fish,
+`source ~/.my_secrets && cowshed deploy` in bash or zsh.
