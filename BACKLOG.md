@@ -22,6 +22,9 @@
       nothing changed, what it was made from on the container and in the audit log
       (`tests/monorepo_e2e.sh`)
 
+- [x] Every deploy builds from a clean copy of what is committed, not only with `branch` or
+      `sources`. Before, a new file or one git ignores, such as `.env`, could enter an image
+      unseen
 - [x] `cowshed proxy adopt`: a routes folder for a Traefik from one Compose file and a YAML
       settings file, proven before the cut (`tests/proxy_e2e.sh`). Ran on a real server
       with the owner (2026-11-01), about 2 s out, and was undone by hand
@@ -53,6 +56,7 @@
       wins. Loaded only if the project uses secrets; a missing file stops before any build,
       naming the path. Values never printed. The file is executed, so it must be trusted.
       Later, if wanted: a user-wide default in `~/.config/cowshed/config`
+- [ ] A clean copy has no git submodules: the build fails if it needs them
 - [ ] A clean copy lacks what git ignores on the first deploy: a build needing it (Orbitville's
       assets?) must fetch it itself
 - [ ] A page's own check before the switch: a health path proves the server, not that

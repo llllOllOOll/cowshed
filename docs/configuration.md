@@ -61,6 +61,13 @@ nothing into them, and `remove` leaves them. During a switch the old and the new
 use them together, for up to `drain_timeout` seconds: a database file must allow that,
 and a migration on start reaches the old version's data even if the new one then fails.
 
+## What goes into the image
+
+Only what is committed: a deploy builds from a clean copy of the repository, in
+`~/.cache/cowshed/clones/<service>/`. A build needing what git ignores must fetch or make
+it itself; `builder.before` runs in that copy. The config and the secrets file are read
+from this folder. `cowshed deploy --dirty` builds this folder instead, as a test.
+
 ## A project among others, or using other repositories
 
 ```yaml
@@ -70,10 +77,9 @@ sources:
   - ../../engine
 ```
 
-With either, a deploy builds from clean copies at that branch's commit, in
-`~/.cache/cowshed/clones/<service>/`, whatever is checked out here. Other work in the
-folder stays out. `sources` also lists what makes up the project: if none changed since
-what is live, the deploy says so and stops.
+`branch` builds that branch's commit, whatever is checked out here. `sources` lists what
+else makes up the project, each copied clean: if none changed since what is live, the
+deploy says so and stops.
 
 ## The secrets file
 

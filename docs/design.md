@@ -37,14 +37,16 @@ Each project has its own `config/deploy.yml`, and runs from its own folder. With
 
 - **Clean copies:** each source's repository is copied to
   `~/.cache/cowshed/clones/<service>/`, keeping their places relative to each other,
-  and set to the branch's commit. Others' uncommitted work is told and left out.
+  and set to the commit, the branch's if `branch` is set. This holds for every project,
+  a single repository too. What is not committed is told and left out: no file
+  git has not seen, and no secret it ignores, reaches an image by accident.
   Copies are kept: what git ignores, a build's downloads, need not come again.
 - **Version:** the project's repository commit. It says nothing of
   whether the project changed, since a monorepo's commit may be another project's.
 - **Whether it changed:** `game@abc,engine@def`, the last commit touching each source,
   is kept on the container and in the audit log. If what runs has the same, the deploy
   says so and stops; `--force` goes on. `versions` shows it.
-- `--dirty` builds this folder as it is, as a test.
+- `--dirty` builds this folder as it is, as a test, and says so.
 
 ## The first setup
 
@@ -221,7 +223,7 @@ Read in `tools/deploy.sh` of Orbitville and Arena:
 - A project's own build (a Zig server, a web build, assets copied, a Dockerfile
   written): `builder.before`, a command that produces the context folder, run here.
 - A check of the staged files before anything is sent (Orbitville): `pre_upload`.
-- A refusal of uncommitted work, unless `--dirty`; the version is the short commit.
+- Builds from what is committed, unless `--dirty`; the version is the short commit.
 - `cmd` arguments per word, and `cpus` and `memory` as `docker run` limits.
 - `stop` and `remove`.
 - Health: both serve HTTP, so a path replaces waiting for a line in the logs.

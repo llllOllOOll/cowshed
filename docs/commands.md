@@ -41,8 +41,12 @@ machine, sends what the server lacks, starts the new version beside the old one,
 its health, moves the traffic, waits for the old one's connections and stops it. Until
 the traffic moves, any failure leaves the old version untouched.
 
-- `--dirty` ships this folder as it is, as a test. Without it, uncommitted work stops
-  the deploy; with `branch` or `sources` it is left out instead.
+A deploy is built from a clean copy of what is committed. Changed files, new files and
+what git ignores stay out, and it says how many differ. If what runs came from the same
+commits, it says so and stops.
+
+- `--dirty` ships this folder as it is, as a test: changes, new files and what git ignores,
+  unless `.dockerignore` leaves them out.
 - `--force` deploys even if nothing changed.
 
 **`cowshed rollback <version>`** goes back to a version still on the server, with no

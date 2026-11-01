@@ -91,10 +91,10 @@ drain_timeout_s: u32 = DEFAULT_DRAIN_TIMEOUT_S,
 replaces: ?[]const u8 = null,
 /// The secrets file, if not the default.
 secrets: ?[]const u8 = null,
-/// Builds from a clean copy of this branch, whatever is checked out here.
+/// Builds from this branch, whatever is checked out here. HEAD otherwise.
 branch: ?[]const u8 = null,
-/// What makes up the project, also from other repositories, relative to here. A
-/// deploy comes from clean copies of them, and is skipped if none changed.
+/// What makes up the project besides this folder, also from other repositories,
+/// relative to here. Copied clean like it, and part of knowing whether it changed.
 sources: []const []const u8 = &.{},
 accessories: []const Accessory = &.{},
 /// What was read and has no effect here (`registry`, `boot`), to tell the user.
@@ -417,10 +417,6 @@ const Reader = struct {
 };
 
 /// Whether a deploy builds from clean copies, rather than this folder as it is.
-pub fn cleanCopy(self: Config) bool {
-    return self.branch != null or self.sources.len > 0;
-}
-
 /// Both sides are required: a container path alone would be a volume no version
 /// finds again. A relative path or `~` would not mean what it seems on the server.
 fn isVolume(text: []const u8) bool {
@@ -550,7 +546,6 @@ test "a project in a monorepo" {
     try testing.expectEqualStrings("main", config.branch.?);
     try testing.expect(config.secrets == null);
     try testing.expectEqualStrings("../../engine", config.sources[1]);
-    try testing.expect(config.cleanCopy());
 }
 
 test "an env without clear or secret is all clear" {

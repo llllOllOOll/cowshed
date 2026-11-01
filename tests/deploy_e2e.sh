@@ -25,6 +25,7 @@ exec /usr/bin/ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o
 WRAP
 chmod +x "$WORK/bin/ssh"
 export PATH="$WORK/bin:$PATH"
+export XDG_CACHE_HOME="$WORK/cache" # Clean copies of this run, not the user's
 
 docker rm -f "$NAME" >/dev/null 2>&1 || true
 docker run -d --privileged --name "$NAME" -p "127.0.0.1:$SSH_PORT:22" -p "127.0.0.1:$WEB_PORT:80" -e DOCKER_TLS_CERTDIR= cowshed-e2e-server >/dev/null
@@ -53,7 +54,7 @@ proxy:
   healthcheck:
     path: /up
 builder:
-  before: echo "\$COWSHED_VERSION" > built.txt
+  before: echo "\$COWSHED_VERSION" > built.txt; ls -A > "$WORK/seen"
 env:
   clear:
     MODE: test
@@ -72,7 +73,7 @@ FROM_ENV_VAR=$E2E_FROM_ENV
 NOT_WANTED=$(exit 1)
 SECRETS
 export E2E_FROM_ENV=hidden-env-value
-printf 'built.txt\n.cowshed\n' > "$APP/.gitignore"
+printf 'built.txt\n.cowshed\nignored.env\n' > "$APP/.gitignore"
 git -C "$APP" init -q
 git -C "$APP" config user.email e2e@example.com
 git -C "$APP" config user.name e2e-tester
@@ -93,19 +94,24 @@ live_containers() { inside docker ps --filter label=service=e2e --format '{{.Nam
 echo "== setup"
 cowshed setup
 
-echo "== uncommitted work is refused; no repository commit yet"
+echo "== no commit yet: refused"
 if cowshed deploy > "$WORK/out"; then fail "deployed with no commit"; fi
+grep -q "no commit yet" "$WORK/out" || fail "wrong reason: $(cat "$WORK/out")"
 
 commit one
-echo changed >> "$APP/app.py"
-if cowshed deploy > "$WORK/out"; then fail "deployed uncommitted work"; fi
-grep -q "uncommitted changes" "$WORK/out" || fail "wrong reason: $(cat "$WORK/out")"
-git -C "$APP" checkout -q -- app.py
+echo uncommitted > "$APP/version.txt"
+echo new > "$APP/untracked.txt"
+echo hidden > "$APP/ignored.env"
 
-echo "== a first deploy, replacing a container from before"
+echo "== a first deploy, replacing a container from before, with only what is committed"
 inside docker run -d --name legacy alpine sleep 600 >/dev/null
 cowshed deploy | tee "$WORK/out" | grep -vE '^#|^$|^ *$' | cut -c1-120 | tail -12
 [ "$(serving)" = one ] || fail "not serving one: $(serving)"
+grep -q "not part of this deploy" "$WORK/out" || fail "it did not say what stayed out"
+grep -q "app.py" "$WORK/seen" || fail "the build saw no copy"
+if grep -qE "untracked.txt|ignored.env" "$WORK/seen"; then fail "the build saw what is not committed"; fi
+git -C "$APP" checkout -q -- version.txt
+rm "$APP/untracked.txt" "$APP/ignored.env"
 [ "$(inside docker inspect -f '{{.State.Running}}' legacy)" = false ] || fail "legacy still runs"
 inside docker inspect legacy >/dev/null || fail "legacy was removed"
 grep -q "from outside\|did not answer" "$WORK/out" || fail "no look from outside"
@@ -183,7 +189,7 @@ cowshed deploy > "$WORK/out" || fail "deploy: $(tail -3 "$WORK/out")"
 python3 "$ROOT/tests/load.py" "$WEB_PORT" "$WORK/stop2" > "$WORK/load" &
 load=$!
 sleep 1
-cowshed deploy > "$WORK/out" || fail "redeploy: $(tail -3 "$WORK/out")"
+cowshed deploy --force > "$WORK/out" || fail "redeploy: $(tail -3 "$WORK/out")"
 touch "$WORK/stop2"
 wait "$load"
 grep -q CLEAN "$WORK/load" || { cat "$WORK/load"; fail "a redeploy saw errors"; }

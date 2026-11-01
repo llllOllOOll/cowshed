@@ -17,21 +17,14 @@ fn output(arena: Allocator, io: Io, argv: []const []const u8) ?[]const u8 {
     return std.mem.trimEnd(u8, result.stdout, "\r\n");
 }
 
-pub const Version = union(enum) {
-    version: []const u8,
-    not_a_repository,
-    uncommitted,
-};
-
-/// The short commit. Uncommitted work, with `dirty`, gets the time too: two tests
-/// are different things.
-pub fn version(arena: Allocator, io: Io, dirty: bool) Version {
-    const commit = output(arena, io, &.{ "git", "rev-parse", "--short", "HEAD" }) orelse return .not_a_repository;
-    const clean = process.run(arena, io, &.{ "git", "diff", "--quiet", "HEAD", "--", "." }, null) catch return .not_a_repository;
-    if (clean.exitCode() == 0) return .{ .version = commit };
-    if (!dirty) return .uncommitted;
+/// `--dirty`: the short commit, and the time if anything differs, new files included:
+/// two tests are different things. Null with no commit.
+pub fn dirtyVersion(arena: Allocator, io: Io) ?[]const u8 {
+    const commit = output(arena, io, &.{ "git", "rev-parse", "--short", "HEAD" }) orelse return null;
+    const status = output(arena, io, &.{ "git", "status", "--porcelain", "--", "." }) orelse return null;
+    if (status.len == 0) return commit;
     const time = output(arena, io, &.{ "date", "+%s" }) orelse "0";
-    return .{ .version = std.fmt.allocPrint(arena, "{s}-dirty-{s}", .{ commit, time }) catch return .not_a_repository };
+    return std.fmt.allocPrint(arena, "{s}-dirty-{s}", .{ commit, time }) catch null;
 }
 
 pub fn who(arena: Allocator, io: Io, environ: *const std.process.Environ.Map) []const u8 {
@@ -99,6 +92,7 @@ pub fn readSources(arena: Allocator, io: Io, listed: []const []const u8, branch:
         const prefix = git(arena, io, folder, &.{ "rev-parse", "--show-prefix" }) orelse "";
         const ref = branch orelse "HEAD";
         const commit = git(arena, io, folder, &.{ "rev-parse", "--verify", try std.fmt.allocPrint(arena, "{s}^{{commit}}", .{ref}) }) orelse {
+            if (branch == null) return .{ .failed = try std.fmt.allocPrint(arena, "`{s}` has no commit yet: a deploy is made from one", .{folder}) };
             return .{ .failed = try std.fmt.allocPrint(arena, "`{s}` has no branch `{s}`", .{ folder, ref }) };
         };
         const touched = git(arena, io, folder, &.{ "log", "-1", "--format=%h", commit, "--", "." }) orelse "";

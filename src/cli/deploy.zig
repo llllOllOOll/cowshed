@@ -45,8 +45,8 @@ pub fn run(arena: Allocator, io: std.Io, environ: *const std.process.Environ.Map
 
     var ssh: Ssh = .{ .io = io, .user = config.ssh.user, .host = config.host, .port = config.ssh.port, .keys = config.ssh.keys };
 
-    // From clean copies, unless asked for what is here as it is.
-    const clean = config.cleanCopy() and !options.dirty;
+    // From what is committed, unless asked for what is here as it is.
+    const clean = !options.dirty;
     var made_from: ?[]const u8 = null;
     var sources: []const local.Source = &.{};
     var version: []const u8 = undefined;
@@ -75,17 +75,11 @@ pub fn run(arena: Allocator, io: std.Io, environ: *const std.process.Environ.Map
             return true;
         }
     } else {
-        version = switch (local.version(arena, io, options.dirty)) {
-            .version => |text| text,
-            .not_a_repository => {
-                try out.writeAll("stopped: a version comes from git: this is no repository with a commit\n");
-                return false;
-            },
-            .uncommitted => {
-                try out.writeAll("stopped: uncommitted changes: commit them, or `--dirty` to ship them as a test\n");
-                return false;
-            },
+        version = local.dirtyVersion(arena, io) orelse {
+            try out.writeAll("stopped: a version comes from git: this is no repository with a commit\n");
+            return false;
         };
+        try out.writeAll("notice: --dirty: building this folder as it is, what git ignores included unless .dockerignore leaves it out\n");
     }
 
     // Before anything slow, and nothing reaches the server if one is missing.
