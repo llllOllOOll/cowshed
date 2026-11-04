@@ -8,7 +8,6 @@ const Remote = @import("../remote/Remote.zig");
 const docker = @import("../docker/commands.zig");
 const detect = @import("../proxy/detect.zig");
 const edit = @import("../proxy/adopt.zig");
-const traefik = @import("../proxy/traefik.zig");
 const lock = @import("lock.zig");
 const Allocator = std.mem.Allocator;
 const Writer = std.Io.Writer;
@@ -121,20 +120,13 @@ pub fn run(arena: Allocator, remote: Remote, out: *Writer, config: Config, who: 
 
     const listed = try self.ask(docker.list_running);
     if (!listed.ok()) return self.stop("could not list containers: {s}", .{lastLine(listed.stderr)});
-    var running: ?detect.Traefik = null;
-    var lines = std.mem.splitScalar(u8, listed.stdout, '\n');
-    while (lines.next()) |line| {
-        var fields = std.mem.splitScalar(u8, line, '\t');
-        const id = fields.next() orelse continue;
-        const image = fields.next() orelse continue;
-        const name = fields.next() orelse continue;
-        if (!traefik.isTraefikImage(image)) continue;
-        if (running != null) return self.stop("more than one Traefik runs on this server: leave one", .{});
-        running = .{ .id = id, .image = image, .name = name, .network = "", .routes_dir = "", .http_entrypoint = null, .https_entrypoint = null, .resolver = null, .api = false };
-    }
-    const found = running orelse {
-        try out.writeAll("no Traefik runs here: nothing to adopt. `cowshed setup` starts one\n");
-        return true;
+    const found: detect.Traefik = switch (detect.servingTraefik(try detect.parseRunning(arena, listed.stdout))) {
+        .none => {
+            try out.writeAll("no Traefik holds port 80 or 443 here: nothing to adopt. `cowshed setup` starts one\n");
+            return true;
+        },
+        .many => |names| return self.stop("more than one Traefik holds port 80 or 443 here (`{s}`, `{s}`): leave one", .{ names[0], names[1] }),
+        .one => |c| .{ .id = c.id, .image = c.image, .name = c.name, .network = "", .routes_dir = "", .http_entrypoint = null, .https_entrypoint = null, .resolver = null, .api = false },
     };
 
     const facts = try gather(self, found) orelse return false;
@@ -497,7 +489,7 @@ const Harness = struct {
         const a = self.arena.allocator();
         self.fake = Fake.init(a);
         self.output = .init(a);
-        try self.on("docker ps --format", 0, "abc\ttraefik:latest\ttraefik\nd\tapp:1\tapp\n");
+        try self.on("docker ps --format", 0, "abc\ttraefik:latest\ttraefik\t0.0.0.0:80->80/tcp, 0.0.0.0:443->443/tcp\tweb\nd\tapp:1\tapp\n");
         try self.on("docker inspect --format {{json", 0, "[\"/entrypoint.sh\"]\n[\"traefik\"]\nweb \n");
         try self.on("traefik.$e", 0, "/traefik.yml\n" ++ SETTINGS);
         try self.on("docker inspect --format {{index .Config.Labels \"com.docker.compose.project\"}}", 0, INSPECTED);

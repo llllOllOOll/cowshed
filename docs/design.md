@@ -108,7 +108,9 @@ keeps meaning the running container. Uncommitted work (`--dirty`) is
 
 ## The proxy: Traefik through its file provider
 
-Look at the host first:
+Look at the host first. The server's Traefik is the one that holds 80 or 443, published
+or on the host's network; a Traefik on other ports only serves something else, and is
+neither used nor touched. Two that hold them: stop.
 - **A Traefik with a file provider:** use it. Read its network, entrypoint and
   certificate resolver from its flags in `docker inspect`, or from its YAML settings
   file through its own container, found where Traefik looks for it. Only those keys
@@ -125,7 +127,9 @@ Look at the host first:
   router must be enabled and each host answer no worse than before, or the files
   are put back and Traefik recreated.
 - **Nothing on 80/443:** start our own, with a persisted `acme.json`.
-- **Anything else on 80/443:** stop with a clear message. See Moving a server.
+- **Anything else on 80/443, or on a `proxy.tcp` port:** stop, naming what holds it:
+  the container publishing it, else the program `ss` or `netstat` shows, else that this
+  user cannot see it. Never a guess at which proxy it is. See Moving a server.
 
 Each app owns one file holding its routers and services, so a switch is one
 rename. It addresses the versioned container by name

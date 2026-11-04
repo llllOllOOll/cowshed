@@ -838,7 +838,7 @@ const TRAEFIK_INSPECT =
 ;
 
 fn withTraefik(h: *Harness) !void {
-    try h.on("docker ps --format", 0, "t1\ttraefik:3\ttraefik\n");
+    try h.on("docker ps --format", 0, "t1\ttraefik:3\ttraefik\t0.0.0.0:80->80/tcp, 0.0.0.0:443->443/tcp\tweb\n");
     try h.on("docker inspect --format {{json", 0, TRAEFIK_INSPECT);
     try h.on("accessory\"}} app-accessory-keycloak", 1, "");
     try h.on("mkdir -p \"$d/files\"", 0, "/home/u/.cowshed/accessories/app-accessory-keycloak");

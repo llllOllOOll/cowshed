@@ -33,11 +33,12 @@ It reaches no server. Fill in what it says, then commit the project.
 ```bash
 cowshed check --remote     # Reads the config, reaches the server. Changes nothing
 cowshed setup --dry-run    # Says what setup would do. Changes nothing
-cowshed setup              # Docker, folders, and Traefik if none runs
+cowshed setup              # Docker, folders, and Traefik if none holds 80 and 443
 cowshed deploy
 ```
 
-Nothing above changes what already runs on the server, with one exception: a Traefik with
+Nothing above changes what already runs on the server. When something else holds port 80, 443
+or a `proxy.tcp` port, `setup` names it and stops. The one exception is a Traefik with
 no routes folder. `setup` stops there and says so:
 
 ```bash

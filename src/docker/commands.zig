@@ -5,7 +5,8 @@ const Allocator = std.mem.Allocator;
 
 pub const version: []const []const u8 = &.{ "docker", "version", "--format", "{{.Server.Version}}" };
 
-pub const list_running: []const []const u8 = &.{ "docker", "ps", "--format", "{{.ID}}\t{{.Image}}\t{{.Names}}" };
+/// Each running container: id, image, name, published ports, networks.
+pub const list_running: []const []const u8 = &.{ "docker", "ps", "--format", "{{.ID}}\t{{.Image}}\t{{.Names}}\t{{.Ports}}\t{{.Networks}}" };
 
 /// Line by line: its entrypoint and command as JSON, then its networks. Nothing
 /// else is asked for: a container's environment may hold secrets.

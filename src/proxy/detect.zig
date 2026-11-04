@@ -49,23 +49,85 @@ pub const Outcome = union(enum) {
     stopped: []const u8,
 };
 
-pub fn detect(arena: Allocator, remote: Remote, proxy: Config.Proxy) Remote.Error!Outcome {
-    const listed = try remote.run(arena, .{ .argv = docker.list_running });
-    if (!listed.ok()) return stopped(arena, "could not list containers: {s}", .{lastLine(listed.stderr)});
+/// A running container, as `docker.list_running` lists it.
+pub const Container = struct {
+    id: []const u8,
+    image: []const u8,
+    name: []const u8,
+    /// As Docker shows them: `0.0.0.0:80->80/tcp, [::]:80->80/tcp, 8080/tcp`.
+    ports: []const u8 = "",
+    networks: []const u8 = "",
 
-    var running: ?Traefik = null;
-    var lines = std.mem.splitScalar(u8, listed.stdout, '\n');
+    /// Port `port` of the server reaches it: published, or on the host's network.
+    pub fn holds(self: Container, port: u16) bool {
+        return publishes(self.ports, port) or self.onHostNetwork();
+    }
+
+    fn onHostNetwork(self: Container) bool {
+        var names = std.mem.tokenizeAny(u8, self.networks, ", ");
+        while (names.next()) |network| {
+            if (std.mem.eql(u8, network, "host")) return true;
+        }
+        return false;
+    }
+};
+
+pub fn parseRunning(arena: Allocator, listing: []const u8) Allocator.Error![]const Container {
+    var found: std.ArrayList(Container) = .empty;
+    var lines = std.mem.splitScalar(u8, listing, '\n');
     while (lines.next()) |line| {
-        var fields = std.mem.splitScalar(u8, line, '\t');
+        var fields = std.mem.splitScalar(u8, std.mem.trimEnd(u8, line, "\r"), '\t');
         const id = fields.next() orelse continue;
         const image = fields.next() orelse continue;
         const name = fields.next() orelse continue;
-        if (!traefik.isTraefikImage(image)) continue;
-        if (running != null) return stopped(arena, "more than one Traefik runs on this server: leave one", .{});
-        running = .{ .id = id, .image = image, .name = name, .network = "", .routes_dir = "", .http_entrypoint = null, .https_entrypoint = null, .resolver = null, .api = false };
+        try found.append(arena, .{ .id = id, .image = image, .name = name, .ports = fields.next() orelse "", .networks = fields.next() orelse "" });
     }
-    if (running) |found| return read(arena, remote, proxy, found);
-    return .none;
+    return found.items;
+}
+
+/// A host port `port` in Docker's list of published ports, ranges included.
+pub fn publishes(ports: []const u8, port: u16) bool {
+    var entries = std.mem.tokenizeAny(u8, ports, ", ");
+    while (entries.next()) |entry| {
+        const arrow = std.mem.indexOf(u8, entry, "->") orelse continue;
+        const outside = entry[0..arrow];
+        const host = outside[(std.mem.lastIndexOfScalar(u8, outside, ':') orelse continue) + 1 ..];
+        const dash = std.mem.indexOfScalar(u8, host, '-');
+        const low = std.fmt.parseInt(u16, host[0 .. dash orelse host.len], 10) catch continue;
+        const high = if (dash) |d| std.fmt.parseInt(u16, host[d + 1 ..], 10) catch continue else low;
+        if (port >= low and port <= high) return true;
+    }
+    return false;
+}
+
+/// The server's Traefik is the one that holds 80 or 443; another Traefik on the server,
+/// on other ports, serves something else and is not ours to use.
+pub const Serving = union(enum) {
+    none,
+    one: Container,
+    /// Their names, for the message.
+    many: [2][]const u8,
+};
+
+pub fn servingTraefik(running: []const Container) Serving {
+    var found: ?Container = null;
+    for (running) |container| {
+        if (!traefik.isTraefikImage(container.image)) continue;
+        if (!container.holds(80) and !container.holds(443)) continue;
+        if (found) |first| return .{ .many = .{ first.name, container.name } };
+        found = container;
+    }
+    return if (found) |one| .{ .one = one } else .none;
+}
+
+pub fn detect(arena: Allocator, remote: Remote, proxy: Config.Proxy) Remote.Error!Outcome {
+    const listed = try remote.run(arena, .{ .argv = docker.list_running });
+    if (!listed.ok()) return stopped(arena, "could not list containers: {s}", .{lastLine(listed.stderr)});
+    switch (servingTraefik(try parseRunning(arena, listed.stdout))) {
+        .none => return .none,
+        .many => |names| return stopped(arena, "more than one Traefik holds port 80 or 443 here (`{s}`, `{s}`): leave one", .{ names[0], names[1] }),
+        .one => |c| return read(arena, remote, proxy, .{ .id = c.id, .image = c.image, .name = c.name, .network = "", .routes_dir = "", .http_entrypoint = null, .https_entrypoint = null, .resolver = null, .api = false }),
+    }
 }
 
 fn read(arena: Allocator, remote: Remote, proxy: Config.Proxy, start: Traefik) Remote.Error!Outcome {
@@ -202,4 +264,31 @@ fn firstWord(text: []const u8) []const u8 {
 pub fn parseStrings(arena: Allocator, json: []const u8) []const []const u8 {
     const parsed = std.json.parseFromSliceLeaky(?[]const []const u8, arena, json, .{}) catch return &.{};
     return parsed orelse &.{};
+}
+
+const testing = std.testing;
+
+test "published ports: single, both families, ranges; an exposed one is not" {
+    try testing.expect(publishes("0.0.0.0:80->80/tcp, [::]:80->80/tcp", 80));
+    try testing.expect(publishes("[::]:443->443/tcp", 443));
+    try testing.expect(publishes("0.0.0.0:8000-8100->8000-8100/tcp", 8080));
+    try testing.expect(publishes("127.0.0.1:5432->5432/tcp", 5432));
+    try testing.expect(!publishes("80/tcp, 0.0.0.0:60005->60005/tcp", 80));
+    try testing.expect(!publishes("0.0.0.0:8080->80/tcp", 80));
+    try testing.expect(!publishes("", 80));
+}
+
+test "the server's Traefik is the one on 80 or 443" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const listing =
+        "a\ttraefik:3\ttcp-only\t0.0.0.0:60005->60005/tcp\tkamal\n" ++
+        "b\tnginx:1\tweb\t0.0.0.0:80->80/tcp\tbridge\n" ++
+        "c\ttraefik:3\tedge\t0.0.0.0:443->443/tcp\tweb\n";
+    const running = try parseRunning(arena.allocator(), listing);
+    try testing.expectEqual(3, running.len);
+    try testing.expectEqualStrings("edge", servingTraefik(running).one.name);
+    try testing.expect(servingTraefik(running[0..2]) == .none);
+    const host = try parseRunning(arena.allocator(), "d\ttraefik:3\tonhost\t\thost\n");
+    try testing.expectEqualStrings("onhost", servingTraefik(host).one.name);
 }

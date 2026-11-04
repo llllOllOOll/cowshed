@@ -702,7 +702,7 @@ const Harness = struct {
         const a = self.arena.allocator();
         self.fake = Fake.init(a);
         self.output = .init(a);
-        try self.on("docker ps --format", 0, "t1\ttraefik:3\ttraefik\n");
+        try self.on("docker ps --format", 0, "t1\ttraefik:3\ttraefik\t0.0.0.0:80->80/tcp, 0.0.0.0:443->443/tcp\tweb\n");
         try self.on("docker inspect --format {{json", 0, INSPECT);
         try self.on("docker ps -a", 0, "app-web-v1\trunning\tv1\n");
         try self.on("docker inspect --format {{.State.Running}}", 0, "true\n");

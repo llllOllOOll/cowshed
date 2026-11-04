@@ -19,7 +19,8 @@ pub const Options = struct {
 const IS_ROOT_OR_SUDO = "[ \"$(id -u)\" -eq 0 ] || sudo -n true";
 const HAS_DOCKER = "command -v docker";
 const INSTALL_DOCKER = "(curl -fsSL https://get.docker.com || wget -O - https://get.docker.com) | sh";
-const LISTENING = "ss -ltn 2>/dev/null || netstat -ltn 2>/dev/null";
+/// With the program holding each port, where the user may see it.
+const LISTENING = "ss -ltnp 2>/dev/null || netstat -ltnp 2>/dev/null";
 const MAKE_FOLDERS =
     \\mkdir -p "$HOME/.cowshed/blobs" "$HOME/.cowshed/locks" "$HOME/.cowshed/traefik/routes" "$HOME/.cowshed/traefik/acme" && printf %s "$HOME"
 ;
@@ -170,7 +171,7 @@ fn ensureOwn(self: Run, home: []const u8) Error!bool {
     if (listening.ok()) {
         for (wanted.items) |port| {
             if (traefik.listensOn(listening.stdout, port)) {
-                return self.stop("something other than Traefik listens on port {d} (nginx? Caddy?). Cowshed will not touch it", .{port});
+                return self.stop("port {d} is held by {s}. Cowshed will not touch it", .{ port, try holderOf(self, listening.stdout, port) });
             }
         }
     } else {
@@ -197,6 +198,46 @@ fn ensureOwn(self: Run, home: []const u8) Error!bool {
     }
     try self.out.print("traefik: started `{s}` ({s}) on {s}, network {s}\n", .{ traefik.OWN_NAME, traefik.OWN_IMAGE, ports, traefik.OWN_NETWORK });
     return true;
+}
+
+/// What holds `port`: a container publishing it, else the program `ss` or `netstat`
+/// names, else that it cannot be told.
+fn holderOf(self: Run, listening: []const u8, port: u16) Error![]const u8 {
+    const listed = try self.ask(docker.list_running);
+    if (listed.ok()) {
+        for (try detect.parseRunning(self.arena, listed.stdout)) |container| {
+            if (detect.publishes(container.ports, port)) {
+                return std.fmt.allocPrint(self.arena, "the container `{s}` ({s})", .{ container.name, container.image });
+            }
+        }
+    }
+    if (programOn(listening, port)) |program| return std.fmt.allocPrint(self.arena, "the program `{s}`", .{program});
+    return "a program this user cannot see";
+}
+
+/// From `ss -p` (`users:(("nginx",pid=1,fd=6))`) or `netstat -p` (`1/nginx`).
+fn programOn(listening: []const u8, port: u16) ?[]const u8 {
+    var buffer: [8]u8 = undefined;
+    const suffix = std.fmt.bufPrint(&buffer, ":{d}", .{port}) catch unreachable;
+    var lines = std.mem.splitScalar(u8, listening, '\n');
+    while (lines.next()) |line| {
+        var words = std.mem.tokenizeAny(u8, line, " \t");
+        var on_port = false;
+        var last: []const u8 = "";
+        while (words.next()) |word| {
+            if (std.mem.endsWith(u8, word, suffix)) on_port = true;
+            last = word;
+        }
+        if (!on_port) continue;
+        if (std.mem.indexOf(u8, line, "users:((\"")) |at| {
+            const rest = line[at + "users:((\"".len ..];
+            if (std.mem.indexOfScalar(u8, rest, '"')) |end| return rest[0..end];
+        }
+        if (std.mem.indexOfScalar(u8, last, '/')) |slash| {
+            if (slash + 1 < last.len and std.ascii.isDigit(last[0])) return last[slash + 1 ..];
+        }
+    }
+    return null;
 }
 
 /// The raw TCP ports the app and its accessories route, each once.
@@ -316,7 +357,7 @@ test "an existing Traefik is used and left alone, its settings told" {
     h.start();
     try h.on("docker version", 0, "29\n");
     try h.on("mkdir -p", 0, "/home/u");
-    try h.on("docker ps", 0, "abc\ttraefik:latest\ttraefik\nd\tapp:1\tapp\n");
+    try h.on("docker ps", 0, "abc\ttraefik:latest\ttraefik\t0.0.0.0:80->80/tcp, 0.0.0.0:443->443/tcp\tweb\nd\tapp:1\tapp\n");
     try h.on("docker inspect", 0, VPS_INSPECT);
     try testing.expect(try h.setup(SSL_PROXY, .{}));
     try h.says("network network_public");
@@ -333,7 +374,7 @@ test "an existing Traefik is used and left alone, its settings told" {
 fn existingWith(h: *Harness, inspect: []const u8) !void {
     try h.on("docker version", 0, "29\n");
     try h.on("mkdir -p", 0, "/home/u");
-    try h.on("docker ps", 0, "abc\ttraefik:3\tt\n");
+    try h.on("docker ps", 0, "abc\ttraefik:3\tt\t0.0.0.0:80->80/tcp, 0.0.0.0:443->443/tcp\tweb\n");
     try h.on("docker inspect", 0, inspect);
 }
 
@@ -514,7 +555,7 @@ test "a new server with raw TCP ports: our Traefik publishes them, if nothing el
         var proxy = PROXY;
         proxy.tcp = &.{60005};
         try testing.expect(!try h.setup(proxy, .{}));
-        try h.says("listens on port 60005");
+        try h.says("port 60005 is held by a program this user cannot see");
         try testing.expect(!h.fake.ran("docker run"));
     }
 }
@@ -525,7 +566,7 @@ test "two Traefiks, and another program on the ports, stop it" {
         defer h.deinit();
         h.start();
         try newServer(&h);
-        try h.on("docker ps", 0, "a\ttraefik:3\tone\nb\ttraefik:3\ttwo\n");
+        try h.on("docker ps", 0, "a\ttraefik:3\tone\t0.0.0.0:80->80/tcp\tweb\nb\ttraefik:3\ttwo\t0.0.0.0:443->443/tcp\tweb\n");
         try testing.expect(!try h.setup(PROXY, .{}));
         try h.says("more than one Traefik");
     }
@@ -534,11 +575,70 @@ test "two Traefiks, and another program on the ports, stop it" {
         defer h.deinit();
         h.start();
         try newServer(&h);
-        try h.on("ss -ltn", 0, "LISTEN 0 1 0.0.0.0:443 0.0.0.0:*\n");
+        try h.on("ss -ltn", 0, "LISTEN 0 1 0.0.0.0:443 0.0.0.0:* users:((\"nginx\",pid=7,fd=6))\n");
         try testing.expect(!try h.setup(PROXY, .{}));
-        try h.says("listens on port 443");
+        try h.says("port 443 is held by the program `nginx`. Cowshed will not touch it");
         try testing.expect(!h.fake.ran("docker run"));
     }
+    {
+        var h = Harness.create();
+        defer h.deinit();
+        h.start();
+        try newServer(&h);
+        try h.on("ss -ltn", 0, "tcp 0 0 0.0.0.0:80 0.0.0.0:* LISTEN 812/caddy\n");
+        try testing.expect(!try h.setup(PROXY, .{}));
+        try h.says("port 80 is held by the program `caddy`");
+    }
+}
+
+test "a Traefik on other ports is not the server's; what holds 80 is named, whatever it is" {
+    // Another proxy on 80 and 443, and a Traefik that serves only a raw TCP port.
+    const RUNNING =
+        "k1\tbasecamp/kamal-proxy:v0.9.0\tkamal-proxy\t0.0.0.0:80->80/tcp, [::]:80->80/tcp, 0.0.0.0:443->443/tcp, [::]:443->443/tcp\tkamal\n" ++
+        "t1\ttraefik:v3.6.1\tapp-tcp\t80/tcp, 0.0.0.0:60005->60005/tcp, [::]:60005->60005/tcp\tkamal\n";
+    const LISTEN = "LISTEN 0 4096 0.0.0.0:80 0.0.0.0:* users:((\"docker-proxy\",pid=1,fd=8))\n" ++
+        "LISTEN 0 4096 0.0.0.0:60005 0.0.0.0:* users:((\"docker-proxy\",pid=2,fd=8))\n";
+    {
+        var h = Harness.create();
+        defer h.deinit();
+        h.start();
+        try newServer(&h);
+        try h.on("docker ps", 0, RUNNING);
+        try h.on("ss -ltn", 0, LISTEN);
+        try testing.expect(!try h.setup(PROXY, .{}));
+        try h.says("port 80 is held by the container `kamal-proxy` (basecamp/kamal-proxy:v0.9.0). Cowshed will not touch it");
+        // Not read as the server's Traefik, and nothing started or changed.
+        try testing.expect(!h.fake.ran("k1"));
+        try testing.expect(!h.fake.ran("t1"));
+        try testing.expect(!h.fake.ran("docker run"));
+    }
+    {
+        // With 80 and 443 free, the raw TCP port's holder is named.
+        var h = Harness.create();
+        defer h.deinit();
+        h.start();
+        try newServer(&h);
+        try h.on("docker ps", 0, RUNNING[std.mem.indexOf(u8, RUNNING, "t1").?..]);
+        try h.on("ss -ltn", 0, LISTEN[std.mem.indexOf(u8, LISTEN, "LISTEN 0 4096 0.0.0.0:60005").?..]);
+        var proxy = PROXY;
+        proxy.tcp = &.{60005};
+        try testing.expect(!try h.setup(proxy, .{}));
+        try h.says("port 60005 is held by the container `app-tcp` (traefik:v3.6.1)");
+        try testing.expect(!h.fake.ran("docker run"));
+    }
+}
+
+test "a Traefik on the host's network holds the ports itself, and is the server's" {
+    var h = Harness.create();
+    defer h.deinit();
+    h.start();
+    try h.on("docker version", 0, "29\n");
+    try h.on("mkdir -p", 0, "/home/u");
+    try h.on("docker ps", 0, "abc\ttraefik:3\tt\t\thost\n");
+    try h.on("docker inspect", 0, VPS_INSPECT);
+    _ = try h.setup(SSL_PROXY, .{});
+    try testing.expect(h.fake.ran("docker exec abc"));
+    try testing.expect(!h.fake.ran("docker run"));
 }
 
 test "ssl with no email, on a new server, stops before anything starts" {

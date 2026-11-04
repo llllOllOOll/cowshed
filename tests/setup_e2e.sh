@@ -141,7 +141,18 @@ inside docker rm -f traefik >/dev/null
 inside sh -c 'nohup nc -lk -p 443 >/dev/null 2>&1 & echo started' >/dev/null
 sleep 1
 if "${C[@]}" > "$WORK/out"; then cat "$WORK/out"; fail "it should have stopped"; fi
-grep -q "listens on port 443" "$WORK/out" || { cat "$WORK/out"; fail "wrong reason"; }
+grep -q "port 443 is held by the program \`nc\`" "$WORK/out" || { cat "$WORK/out"; fail "wrong reason"; }
 [ -z "$(inside docker ps -q)" ] || fail "started something"
+inside pkill -f 'nc -lk -p 443' || true
+
+echo "== a Traefik on another port, and a container on 80: that one named, neither touched"
+inside docker run -d --name tcp-only -p 9000:9000 traefik:3.6.6 --entrypoints.raw.address=:9000 >/dev/null
+inside docker run -d --name other-proxy -p 80:80 alpine:3 sleep 600 >/dev/null
+before=$(inside docker inspect -f '{{.Id}} {{.State.StartedAt}}' tcp-only other-proxy)
+if "${C[@]}" > "$WORK/out"; then cat "$WORK/out"; fail "it should have stopped"; fi
+grep -q "port 80 is held by the container \`other-proxy\` (alpine:3)" "$WORK/out" || { cat "$WORK/out"; fail "wrong reason"; }
+grep -q "tcp-only" "$WORK/out" && fail "it took the other Traefik for the server's"
+[ "$before" = "$(inside docker inspect -f '{{.Id}} {{.State.StartedAt}}' tcp-only other-proxy)" ] || fail "it touched them"
+[ "$(inside docker ps -q | wc -l)" = 2 ] || fail "started something else"
 
 echo "e2e passed"
