@@ -14,6 +14,7 @@ const DEFAULT_HEALTH_PATH = "/up";
 const DEFAULT_HEALTH_INTERVAL_S = 1;
 const DEFAULT_HEALTH_TIMEOUT_S = 5;
 const DEFAULT_DEPLOY_TIMEOUT_S = 30;
+const DEFAULT_BOOT_TIMEOUT_S = 60;
 const DEFAULT_DRAIN_TIMEOUT_S = 30;
 const DEFAULT_MIGRATE_TIMEOUT_S = 300;
 const DEFAULT_BACKUP_TIMEOUT_S = 600;
@@ -95,7 +96,10 @@ pub const Accessory = struct {
     volumes: []const []const u8 = &.{},
     /// Its networks; the project's `networks` when not set.
     networks: ?[]const []const u8 = null,
+    /// A route through Traefik, to its container: its health is asked before.
     proxy: ?Proxy = null,
+    /// Seconds for it to prove healthy, with `proxy`: an identity server is slow to start.
+    boot_timeout_s: u32 = DEFAULT_BOOT_TIMEOUT_S,
 };
 
 service: []const u8,
@@ -317,7 +321,7 @@ const Reader = struct {
     fn readAccessory(self: *Reader, entry: yaml.Entry) Allocator.Error!Accessory {
         const value = entry.value;
         const path = try std.fmt.allocPrint(self.arena, "accessories.{s}", .{entry.key});
-        try self.checkKeys(value, entry.line, path, &.{ "image", "host", "port", "cmd", "env", "files", "directories", "volumes", "networks", "proxy" });
+        try self.checkKeys(value, entry.line, path, &.{ "image", "host", "port", "cmd", "env", "files", "directories", "volumes", "networks", "proxy", "boot_timeout" });
         if (!isSafeName(entry.key)) {
             try self.problem(entry.line, "an accessory's name may have only letters, digits, `-`, `_` and `.`: `{s}`", .{entry.key});
         }
@@ -333,6 +337,7 @@ const Reader = struct {
             .volumes = try self.strings(value, "volumes", path),
             .networks = if (value.get("networks") != null) try self.strings(value, "networks", path) else null,
             .proxy = try self.readProxy(value, try std.fmt.allocPrint(self.arena, "{s}.", .{path})),
+            .boot_timeout_s = try self.number(u32, value, "boot_timeout", path, DEFAULT_BOOT_TIMEOUT_S),
         };
     }
 

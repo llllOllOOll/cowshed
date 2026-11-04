@@ -6,6 +6,7 @@ set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 SSH_PORT=12223
+WEB_PORT=18091
 NAME=cowshed-e2e-accessory
 WORK=$(mktemp -d)
 cleanup() {
@@ -26,7 +27,7 @@ chmod +x "$WORK/bin/ssh"
 export PATH="$WORK/bin:$PATH"
 
 docker rm -f "$NAME" >/dev/null 2>&1 || true
-docker run -d --privileged --name "$NAME" -p "127.0.0.1:$SSH_PORT:22" -e DOCKER_TLS_CERTDIR= cowshed-e2e-server >/dev/null
+docker run -d --privileged --name "$NAME" -p "127.0.0.1:$SSH_PORT:22" -p "127.0.0.1:$WEB_PORT:80" -e DOCKER_TLS_CERTDIR= cowshed-e2e-server >/dev/null
 for _ in $(seq 60); do
 	docker exec "$NAME" docker version >/dev/null 2>&1 && break
 	sleep 1
@@ -62,6 +63,15 @@ accessories:
       - config/db/init.sql:/init/init.sql
     directories:
       - data:/data
+  auth:
+    image: busybox:1
+    cmd: sh -c 'mkdir -p /www && echo "auth \$(date +%s%N)" > /www/index.html && exec httpd -f -p 8080 -h /www'
+    proxy:
+      host: auth.example
+      app_port: 8080
+      healthcheck:
+        path: /
+    boot_timeout: 20
 YAML
 cat > "$APP/.cowshed/secrets" <<'SECRETS'
 DB_PASSWORD=$(printf 'hidden-db-password')
@@ -139,6 +149,28 @@ inside docker network inspect acc-own > /dev/null || fail "the network went"
 cowshed accessory boot db > /dev/null
 [ "$(inside cat "$FOLDER/directories/data/password")" = hidden-db-password ] || fail "booting again failed"
 cowshed accessory remove db --yes > /dev/null
+
+echo "== a route: healthy through Traefik, then reachable by its host, across a reboot"
+cowshed setup > /dev/null
+cowshed accessory boot auth | tee "$WORK/out"
+grep -q "health: acc-auth is healthy" "$WORK/out" || fail "its health was not asked"
+reach() { curl -s -H 'Host: auth.example' "http://127.0.0.1:$WEB_PORT/"; }
+first=$(reach)
+case "$first" in auth\ *) ;; *) fail "not reachable by its host: $first" ;; esac
+inside docker inspect -f '{{json .NetworkSettings.Networks}}' acc-auth | grep -q '"cowshed"' || fail "not on Traefik's network"
+cowshed accessory reboot auth > "$WORK/out" || { cat "$WORK/out"; fail "the reboot failed"; }
+second=$(reach)
+case "$second" in auth\ *) ;; *) fail "not reachable after the reboot: $second" ;; esac
+[ "$second" != "$first" ] || fail "the reboot did not serve a new container"
+cowshed accessory remove auth --yes > "$WORK/out"
+inside test ! -e /root/.cowshed/traefik/routes/cowshed-acc-auth.yml || fail "its route file stayed"
+code=
+for _ in $(seq 10); do
+	code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: auth.example' "http://127.0.0.1:$WEB_PORT/")
+	[ "$code" = 404 ] && break
+	sleep 0.5
+done
+[ "$code" = 404 ] || fail "its route stayed: $code, $(cat "$WORK/out")"
 
 echo "== one that exits at once: shown, removed, its directory kept"
 sed -i "s|exec sleep 600|echo broken setting; exit 1|" "$APP/config/deploy.yml"

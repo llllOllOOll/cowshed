@@ -9,6 +9,8 @@ const Remote = @import("../remote/Remote.zig");
 const docker = @import("../docker/commands.zig");
 const deploy = @import("deploy.zig");
 const lock = @import("lock.zig");
+const routing = @import("routing.zig");
+const detect = @import("../proxy/detect.zig");
 const Allocator = std.mem.Allocator;
 const Writer = std.Io.Writer;
 
@@ -68,6 +70,47 @@ pub fn networksOf(config: Config, accessory: Config.Accessory) []const []const u
     return accessory.networks orelse config.networks;
 }
 
+/// Traefik's network first, with `proxy`, then its own.
+fn joined(arena: Allocator, config: Config, accessory: Config.Accessory, traefik: ?detect.Traefik) Allocator.Error![]const []const u8 {
+    var networks: std.ArrayList([]const u8) = .empty;
+    if (traefik) |found| try networks.append(arena, found.network);
+    for (networksOf(config, accessory)) |network| {
+        for (networks.items) |already| {
+            if (std.mem.eql(u8, already, network)) break;
+        } else try networks.append(arena, network);
+    }
+    return networks.items;
+}
+
+const Proxying = union(enum) {
+    none,
+    traefik: detect.Traefik,
+    stopped,
+};
+
+/// The Traefik its `proxy` needs, if it has one.
+fn proxying(arena: Allocator, remote: Remote, out: *Writer, accessory: Config.Accessory) Error!Proxying {
+    const proxy = accessory.proxy orelse return .none;
+    switch (try detect.detect(arena, remote, proxy)) {
+        .traefik => |found| return .{ .traefik = found },
+        .none => {
+            try out.print("stopped: `accessories.{s}.proxy` needs Traefik, and none runs here: `cowshed setup`\n", .{accessory.name});
+            return .stopped;
+        },
+        .stopped => |message| {
+            try out.print("stopped: {s}\n", .{message});
+            return .stopped;
+        },
+    }
+}
+
+fn traefikOf(proxied: Proxying) ?detect.Traefik {
+    return switch (proxied) {
+        .traefik => |found| found,
+        else => null,
+    };
+}
+
 const State = enum { missing, running, stopped };
 
 fn state(arena: Allocator, remote: Remote, name: []const u8) Remote.Error!State {
@@ -100,9 +143,11 @@ pub fn boot(arena: Allocator, remote: Remote, out: *Writer, config: Config, acce
         },
         .missing => {},
     }
+    const proxied = try proxying(arena, remote, out, accessory);
+    if (proxied == .stopped) return false;
     if (!try acquire(arena, remote, out, name, input.who, "booting")) return false;
     defer lock.release(arena, remote, name) catch {};
-    const ready = try prepare(arena, remote, out, config, accessory, input, name) orelse return false;
+    const ready = try prepare(arena, remote, out, config, accessory, input, name, traefikOf(proxied)) orelse return false;
     if (!try launch(arena, remote, out, config, accessory, name, ready)) {
         try audit(arena, remote, config, input.who, try std.fmt.allocPrint(arena, "accessory {s} failed to boot", .{accessory.name}));
         return false;
@@ -118,6 +163,8 @@ pub fn boot(arena: Allocator, remote: Remote, out: *Writer, config: Config, acce
 pub fn reboot(arena: Allocator, remote: Remote, out: *Writer, config: Config, accessory: Config.Accessory, input: Input) Error!bool {
     const name = try containerName(arena, config, accessory);
     const old = try std.fmt.allocPrint(arena, "{s}-replaced", .{name});
+    const proxied = try proxying(arena, remote, out, accessory);
+    if (proxied == .stopped) return false;
     if (!try acquire(arena, remote, out, name, input.who, "rebooting")) return false;
     defer lock.release(arena, remote, name) catch {};
     if (try state(arena, remote, old) != .missing) {
@@ -126,7 +173,7 @@ pub fn reboot(arena: Allocator, remote: Remote, out: *Writer, config: Config, ac
     }
     const before = try state(arena, remote, name);
     // All that can fail before anything is touched.
-    const ready = try prepare(arena, remote, out, config, accessory, input, name) orelse return false;
+    const ready = try prepare(arena, remote, out, config, accessory, input, name, traefikOf(proxied)) orelse return false;
     if (before == .missing) {
         try out.print("accessory: {s} does not exist; booting it\n", .{name});
         if (!try launch(arena, remote, out, config, accessory, name, ready)) return false;
@@ -183,10 +230,13 @@ fn acquire(arena: Allocator, remote: Remote, out: *Writer, name: []const u8, who
 const Prepared = struct {
     env_file: ?[]const u8,
     volumes: []const []const u8,
+    networks: []const []const u8,
+    traefik: ?detect.Traefik,
 };
 
 /// Its networks, its folder, its env file and its files. Nothing that runs is touched.
-fn prepare(arena: Allocator, remote: Remote, out: *Writer, config: Config, accessory: Config.Accessory, input: Input, name: []const u8) Error!?Prepared {
+fn prepare(arena: Allocator, remote: Remote, out: *Writer, config: Config, accessory: Config.Accessory, input: Input, name: []const u8, traefik: ?detect.Traefik) Error!?Prepared {
+    // Traefik's network is there already; its own may not be.
     for (networksOf(config, accessory)) |network| {
         if ((try remote.run(arena, .{ .argv = try docker.networkExists(arena, network) })).ok()) continue;
         try out.print("network: making {s}\n", .{network});
@@ -242,7 +292,7 @@ fn prepare(arena: Allocator, remote: Remote, out: *Writer, config: Config, acces
         try volumes.append(arena, try std.fmt.allocPrint(arena, "{s}/files/{s}:{s}:ro", .{ folder, stored, file.inside }));
     }
     try volumes.appendSlice(arena, accessory.volumes);
-    return .{ .env_file = env_file, .volumes = volumes.items };
+    return .{ .env_file = env_file, .volumes = volumes.items, .networks = try joined(arena, config, accessory, traefik), .traefik = traefik };
 }
 
 /// Starts the container and waits to see it stay up. If not, it is shown and
@@ -254,7 +304,7 @@ fn launch(arena: Allocator, remote: Remote, out: *Writer, config: Config, access
         .image = accessory.image,
         .service = config.service,
         .accessory = accessory.name,
-        .networks = networksOf(config, accessory),
+        .networks = ready.networks,
         .publish = accessory.port,
         .env_file = ready.env_file,
         .clear_env = accessory.env.clear,
@@ -267,16 +317,36 @@ fn launch(arena: Allocator, remote: Remote, out: *Writer, config: Config, access
         try out.print("stopped: {s} did not start: {s}\n", .{ name, trimmed(started.stderr) });
         return false;
     }
-    const running = try remote.run(arena, .{ .argv = &.{ "sh", "-c", STILL_RUNNING, "sh", SETTLE_S, name } });
-    if (!running.ok() or !std.mem.eql(u8, trimmed(running.stdout), RUNNING_SINCE_START)) {
-        const last = try remote.run(arena, .{ .argv = try docker.logs(arena, name) });
-        try out.print("--- its logs\n{s}{s}---\n", .{ last.stdout, last.stderr });
-        _ = try remote.run(arena, .{ .argv = try docker.remove(arena, name) });
-        try out.print("stopped: {s} exited at once; its directories stay as they are\n", .{name});
-        return false;
+    const ctx: routing.Context = .{ .arena = arena, .remote = remote, .out = out };
+    if (ready.traefik) |traefik| {
+        const proxy = accessory.proxy.?;
+        if (!try routing.healthy(ctx, traefik, name, proxy, accessory.boot_timeout_s)) {
+            try discard(arena, remote, out, name, "did not pass its health check");
+            return false;
+        }
+        try out.print("health: {s} is healthy\n", .{name});
+        // The same name across reboots: the route is the same, and taken at once.
+        if (!try routing.switchTo(ctx, traefik, .{ .key = name, .proxy = proxy, .container = name })) {
+            _ = try remote.run(arena, .{ .argv = try docker.remove(arena, name) });
+            return false;
+        }
+    } else {
+        const running = try remote.run(arena, .{ .argv = &.{ "sh", "-c", STILL_RUNNING, "sh", SETTLE_S, name } });
+        if (!running.ok() or !std.mem.eql(u8, trimmed(running.stdout), RUNNING_SINCE_START)) {
+            try discard(arena, remote, out, name, "exited at once");
+            return false;
+        }
     }
     try out.print("accessory: {s} runs\n", .{name});
     return true;
+}
+
+/// Shows its last logs and removes it. Its directories stay.
+fn discard(arena: Allocator, remote: Remote, out: *Writer, name: []const u8, why: []const u8) Error!void {
+    const last = try remote.run(arena, .{ .argv = try docker.logs(arena, name) });
+    try out.print("--- its logs\n{s}{s}---\n", .{ last.stdout, last.stderr });
+    _ = try remote.run(arena, .{ .argv = try docker.remove(arena, name) });
+    try out.print("stopped: {s} {s}; its directories stay as they are\n", .{ name, why });
 }
 
 pub fn start(arena: Allocator, remote: Remote, out: *Writer, config: Config, accessory: Config.Accessory, who: []const u8) Error!bool {
@@ -361,6 +431,7 @@ pub fn remove(arena: Allocator, remote: Remote, out: *Writer, config: Config, ac
     if (!confirmed) {
         try out.print("this removes the accessory {s} from {s}, and cannot be undone:\n", .{ name, config.host });
         try out.print("  the container {s} ({s}), its env file and the files sent\n", .{ name, @tagName(current) });
+        if (accessory.proxy) |proxy| try out.print("  its route, {s}\n", .{proxy.host});
         for (accessory.directories) |directory| try out.print("  the directory {s} stays, with what it holds\n", .{directory});
         for (accessory.volumes) |volume| try out.print("  the volume {s} stays, with what it holds\n", .{volume});
         try out.writeAll("run it again with `--yes`\n");
@@ -382,6 +453,16 @@ pub fn remove(arena: Allocator, remote: Remote, out: *Writer, config: Config, ac
         }
     }
     _ = try remote.run(arena, .{ .argv = &.{ "sh", "-c", REMOVE_FILES, "sh", name } });
+    if (accessory.proxy) |proxy| {
+        switch (try detect.detect(arena, remote, proxy)) {
+            .traefik => |found| {
+                const ctx: routing.Context = .{ .arena = arena, .remote = remote, .out = out };
+                if (!try routing.removeRoute(ctx, found, name)) try out.print("notice: could not remove the route of {s}\n", .{name});
+            },
+            .none => {},
+            .stopped => |message| try out.print("notice: its route was not touched: {s}\n", .{message}),
+        }
+    }
     for (accessory.directories) |directory| try out.print("kept the directory {s}\n", .{directory});
     for (accessory.volumes) |volume| try out.print("kept the volume {s}\n", .{volume});
     try audit(arena, remote, config, who, try std.fmt.allocPrint(arena, "accessory {s} removed", .{accessory.name}));
@@ -680,4 +761,88 @@ test "reboot: a failure before anything is touched leaves the old one running" {
     try testing.expect(!try reboot(h.arena.allocator(), h.fake.remote(), &h.output.writer, CONFIG, DB, INPUT));
     try testing.expect(!h.fake.ran("docker rename"));
     try testing.expect(!h.fake.ran("docker stop"));
+}
+
+const KEYCLOAK: Config.Accessory = .{
+    .name = "keycloak",
+    .image = "keycloak",
+    .cmd = "start",
+    .proxy = .{ .host = "auth.example", .app_port = 8080, .ssl = true, .health = .{ .path = "/realms/master" } },
+    .boot_timeout_s = 10,
+};
+const PROXIED: Config = .{ .service = "app", .image = "app", .host = "h", .networks = &.{"own"}, .accessories = &.{KEYCLOAK} };
+const TRAEFIK_INSPECT =
+    \\null
+    \\["--api.insecure=true","--entrypoints.web.address=:80","--entrypoints.websecure.address=:443","--providers.file.directory=/routes","--certificatesresolvers.le.acme.email=a@b"]
+    \\public 
+    \\
+;
+
+fn withTraefik(h: *Harness) !void {
+    try h.on("docker ps --format", 0, "t1\ttraefik:3\ttraefik\n");
+    try h.on("docker inspect --format {{json", 0, TRAEFIK_INSPECT);
+    try h.on("{{.State.Running}} app-keycloak", 1, "");
+    try h.on("mkdir -p \"$d/files\"", 0, "/home/u/.cowshed/accessories/app-keycloak");
+    // No route yet.
+    try h.on("cat \"$1/$2\"", 1, "");
+    try h.on("wget -qO- http://127.0.0.1:8080", 0, "{\"url\":\"http://app-keycloak:8080\"}");
+}
+
+test "proxy: on Traefik's network first, healthy through Traefik, then its route" {
+    var h = harness();
+    defer h.arena.deinit();
+    try h.begin();
+    try withTraefik(&h);
+    // Running from the start once it exists.
+    try h.fake.onAfter("docker run -d --name app-keycloak", "{{.State.Running}} app-keycloak", .{ .result = .{ .exit_code = 0, .stdout = "true\n" } });
+    const a = h.arena.allocator();
+    try testing.expect(try boot(a, h.fake.remote(), &h.output.writer, PROXIED, KEYCLOAK, .{ .who = "me" }));
+    try testing.expect(std.mem.indexOf(u8, h.line("docker run -d --name app-keycloak"), "--network public --network own") != null);
+    try testing.expect(h.fake.ran("wget -q -O /dev/null -T 5 http://app-keycloak:8080/realms/master"));
+    try h.before("wget -q -O /dev/null", "cat > \"$1/.$2.tmp\"");
+    const route_write = h.fake.calls.items[h.fake.position("cat > \"$1/.$2.tmp\"").?];
+    try testing.expect(std.mem.endsWith(u8, route_write.line, "/routes cowshed-app-keycloak.yml"));
+    try testing.expect(std.mem.indexOf(u8, route_write.stdin.?, "url: http://app-keycloak:8080") != null);
+    try testing.expect(std.mem.indexOf(u8, route_write.stdin.?, "Host(`auth.example`)") != null);
+    // No settle wait: health decides.
+    try testing.expect(!h.fake.ran("sleep \"$1\""));
+}
+
+test "proxy: unhealthy is shown and removed, and no route is written" {
+    var h = harness();
+    defer h.arena.deinit();
+    try h.begin();
+    try withTraefik(&h);
+    try h.fake.onAfter("docker run -d --name app-keycloak", "{{.State.Running}} app-keycloak", .{ .result = .{ .exit_code = 0, .stdout = "true\n" } });
+    try h.on("wget -q -O /dev/null", 1, "");
+    try h.on("docker logs", 0, "still starting\n");
+    const a = h.arena.allocator();
+    try testing.expect(!try boot(a, h.fake.remote(), &h.output.writer, PROXIED, KEYCLOAK, .{ .who = "me" }));
+    try h.says("did not pass its health check");
+    try h.says("still starting");
+    try testing.expect(h.fake.ran("docker rm -f app-keycloak"));
+    try testing.expect(!h.fake.ran("cat > \"$1/.$2.tmp\""));
+}
+
+test "proxy: with no Traefik nothing starts; remove takes its route" {
+    {
+        var h = harness();
+        defer h.arena.deinit();
+        try h.begin();
+        try h.on("docker ps --format", 0, "");
+        try h.on("{{.State.Running}} app-keycloak", 1, "");
+        try testing.expect(!try boot(h.arena.allocator(), h.fake.remote(), &h.output.writer, PROXIED, KEYCLOAK, .{ .who = "me" }));
+        try h.says("needs Traefik, and none runs here");
+        try testing.expect(!h.fake.ran("docker run"));
+        try testing.expect(!h.fake.ran("locks"));
+    }
+    {
+        var h = harness();
+        defer h.arena.deinit();
+        try h.begin();
+        try withTraefik(&h);
+        try h.on("{{.State.Running}} app-keycloak", 0, "true\n");
+        try testing.expect(try remove(h.arena.allocator(), h.fake.remote(), &h.output.writer, PROXIED, KEYCLOAK, "me", true));
+        try testing.expect(std.mem.endsWith(u8, h.line("rm -f \"$1/$2\""), "/routes cowshed-app-keycloak.yml"));
+    }
 }

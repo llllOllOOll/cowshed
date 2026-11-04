@@ -90,7 +90,8 @@ config's long-lived containers, named `<service>-<name>`:
 
 - `boot <name|all>` starts one that does not exist: its networks, folders, env file
   and files, then the container, which must still run, never restarted, a few seconds
-  later. One that runs is left as it is; one that is stopped is told to `start`.
+  later. With `proxy`, it must instead answer its health path within `boot_timeout`, and
+  then gets its route. One that runs is left as it is; one that is stopped is told to `start`.
 - `reboot <name|all>` recreates it from the config as it is now: a new image tag, other
   settings, new secrets or files. Its data, in its directories, carries over. All that can
   fail is done first; then the old container is set aside and stopped, **which cuts what it
@@ -100,8 +101,8 @@ config's long-lived containers, named `<service>-<name>`:
 - `logs <name> [--lines <n>]`: its latest logs.
 - `exec <name> <command...>`: a command in the running container, as a database's own
   tools need. Its exit code decides; its output comes when it ends.
-- `remove <name> [--yes]`: the container, its env file and the files sent. Its
-  directories and volumes stay. Without `--yes` it only lists them.
+- `remove <name> [--yes]`: the container, its env file, the files sent and its route.
+  Its directories and volumes stay. Without `--yes` it only lists them.
 
 **`cowshed lock status`**, **`cowshed lock release`** say who holds the deploy lock and
 free it after a deploy that died.

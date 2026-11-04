@@ -181,6 +181,11 @@ If the new one fails, the old one gets its name back and is started again as it 
 which of the two holds what is needed is for a person to see. The files sent are the
 new ones even when the old container is put back.
 
+With `proxy`, health and the route are the app's code (`deploy/routing.zig`): its
+health path asked from inside Traefik, then the route written and confirmed by the
+API, put back if Traefik does not take it. Proving it is health, not merely staying up.
+A reboot cuts the route too: Traefik answers 502 until the new container is up.
+
 ## Drain
 
 With Traefik, tested, WebSockets stay on the old container until either side

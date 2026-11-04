@@ -6,19 +6,17 @@ const Config = @import("../config/Config.zig");
 const Remote = @import("../remote/Remote.zig");
 const docker = @import("../docker/commands.zig");
 const detect = @import("../proxy/detect.zig");
-const route = @import("../proxy/route.zig");
 const lock = @import("lock.zig");
+const routing = @import("routing.zig");
 const Allocator = std.mem.Allocator;
 const Writer = std.Io.Writer;
 
 /// Stopped containers kept for a rollback.
 const RETAIN_STOPPED = 3;
-/// How long Traefik gets to show a route. A change took up to 2.3 s when tested.
-const CONFIRM_LIMIT_S = 15;
-const TRAEFIK_API = "http://127.0.0.1:8080/api/http/services";
+/// A TCP connection's state in /proc, for draining.
 const STATE_ESTABLISHED = "01";
 /// How often a wait says it is still waiting.
-const PROGRESS_EVERY_S = 5;
+const PROGRESS_EVERY_S = routing.PROGRESS_EVERY_S;
 
 pub const Secret = struct { name: []const u8, value: []const u8 };
 
@@ -72,11 +70,8 @@ const Run = struct {
         _ = try self.ask(&.{ "sleep", try std.fmt.allocPrint(self.arena, "{d}", .{seconds}) });
     }
 
-    fn inTraefik(self: Run, traefik: detect.Traefik, script: []const u8, args: []const []const u8, stdin: ?[]const u8) Remote.Error!Remote.Result {
-        var argv: std.ArrayList([]const u8) = .empty;
-        try argv.appendSlice(self.arena, &.{ "docker", "exec", "-i", traefik.id, "sh", "-c", script, "sh" });
-        try argv.appendSlice(self.arena, args);
-        return self.remote.run(self.arena, .{ .argv = argv.items, .stdin = stdin });
+    fn context(self: Run) routing.Context {
+        return .{ .arena = self.arena, .remote = self.remote, .out = self.out };
     }
 
     fn audit(self: Run, message: []const u8) Remote.Error!void {
@@ -90,13 +85,6 @@ const APPEND_AUDIT =
 ;
 const WRITE_ENV_FILE =
     \\umask 077 && mkdir -p "$HOME/.cowshed/env" && cat > "$HOME/.cowshed/env/$1" && printf %s "$HOME/.cowshed/env/$1"
-;
-const WRITE_ROUTE = "cat > \"$1/.$2.tmp\" && mv \"$1/.$2.tmp\" \"$1/$2\"";
-const READ_ROUTE = "cat \"$1/$2\"";
-const REMOVE_ROUTE = "rm -f \"$1/$2\"";
-/// Files in the folder naming our router, ours aside: an earlier one would win.
-const FIND_CLASH =
-    \\cd "$1" && for f in *; do [ "$f" = "$2" ] || ! grep -q "$3:" "$f" 2>/dev/null || echo "$f"; done
 ;
 const READ_CONNECTIONS = "cat \"/proc/$1/net/tcp\" \"/proc/$1/net/tcp6\" 2>/dev/null";
 const DELETE_ENV_FILE = "rm -f \"$HOME/.cowshed/env/$1\"";
@@ -436,91 +424,12 @@ fn isHealthy(self: Run, name: []const u8, traefik: ?detect.Traefik) Error!bool {
         try self.wait(settle);
         return isRunning(self, name);
     };
-    const health = proxy.health;
-    const url = try std.fmt.allocPrint(self.arena, "http://{s}:{d}{s}", .{ name, proxy.app_port, health.path });
-    try self.say("health: asking {s}, up to {d} s", .{ url, config.deploy_timeout_s });
-    const timeout = try std.fmt.allocPrint(self.arena, "{d}", .{health.timeout_s});
-    var waited: u32 = 0;
-    while (waited < config.deploy_timeout_s) : (waited += health.interval_s) {
-        if (!try isRunning(self, name)) {
-            try self.say("health: {s} exited", .{name});
-            return false;
-        }
-        const probe = try self.ask(&.{ "docker", "exec", traefik.?.id, "wget", "-q", "-O", "/dev/null", "-T", timeout, url });
-        if (probe.ok()) return true;
-        try self.wait(health.interval_s);
-        const passed = waited + health.interval_s;
-        if (passed % PROGRESS_EVERY_S < health.interval_s) {
-            try self.say("health: not yet, {d} of {d} s", .{ passed, config.deploy_timeout_s });
-        }
-    }
-    return false;
+    return routing.healthy(self.context(), traefik.?, name, proxy, config.deploy_timeout_s);
 }
 
 fn switchRoute(self: Run, traefik: detect.Traefik, name: []const u8) Error!bool {
     const config = self.config();
-    const proxy = config.proxy.?;
-    const file = try route.fileName(self.arena, config.service);
-    const router = try route.routerName(self.arena, config.service);
-
-    const clash = try self.inTraefik(traefik, FIND_CLASH, &.{ traefik.routes_dir, file, router }, null);
-    const clashing = std.mem.trim(u8, clash.stdout, "\r\n ");
-    if (clashing.len > 0) {
-        return self.stop("`{s}` in Traefik's folder also names the router `{s}`: an earlier file would win", .{ clashing, router });
-    }
-
-    const previous = try self.inTraefik(traefik, READ_ROUTE, &.{ traefik.routes_dir, file }, null);
-    const text = try route.render(self.arena, .{
-        .service = config.service,
-        .host = proxy.host,
-        .container = name,
-        .port = proxy.app_port,
-        .entrypoint = if (proxy.ssl) traefik.https_entrypoint.? else traefik.http_entrypoint.?,
-        .resolver = if (proxy.ssl) traefik.resolver else null,
-        // Detection has already refused `ssl_redirect: false` with no HTTP entrypoint.
-        .http_from = if (proxy.ssl) traefik.http_entrypoint else null,
-        .redirect = proxy.ssl_redirect,
-    });
-    try self.say("switch: writing the route {s}", .{file});
-    const written = try self.inTraefik(traefik, WRITE_ROUTE, &.{ traefik.routes_dir, file }, text);
-    if (!written.ok()) {
-        return self.stop("could not write the route: {s}", .{std.mem.trimEnd(u8, written.stderr, "\r\n")});
-    }
-
-    if (!traefik.api) {
-        // Nothing to ask. The longest change seen when tested took 2.3 s.
-        try self.say("notice: Traefik's API is off: the switch is not confirmed", .{});
-        try self.wait(3);
-        return true;
-    }
-    try self.say("switch: waiting for Traefik to take it, up to {d} s", .{CONFIRM_LIMIT_S});
-    if (try showsRoute(self, traefik, router, name)) {
-        try self.say("switch: traffic goes to {s}", .{name});
-        return true;
-    }
-
-    // The new one is thrown away next, so the route must not point at it.
-    try self.say("switch: not taken, putting the route back", .{});
-    if (previous.ok()) {
-        _ = try self.inTraefik(traefik, WRITE_ROUTE, &.{ traefik.routes_dir, file }, previous.stdout);
-    } else {
-        _ = try self.inTraefik(traefik, REMOVE_ROUTE, &.{ traefik.routes_dir, file }, null);
-    }
-    return self.stop("Traefik did not take the new route within {d} s. A broken file in `{s}` blocks every change there, and only Traefik's log says which: the route was put back", .{ CONFIRM_LIMIT_S, traefik.routes_dir });
-}
-
-fn showsRoute(self: Run, traefik: detect.Traefik, router: []const u8, name: []const u8) Error!bool {
-    const url = try std.fmt.allocPrint(self.arena, TRAEFIK_API ++ "/{s}@file", .{router});
-    var waited: u32 = 0;
-    while (waited < CONFIRM_LIMIT_S) : (waited += 1) {
-        const shown = try self.ask(&.{ "docker", "exec", traefik.id, "wget", "-qO-", url });
-        if (shown.ok() and std.mem.indexOf(u8, shown.stdout, name) != null) return true;
-        try self.wait(1);
-        if (waited > 0 and waited % PROGRESS_EVERY_S == 0) {
-            try self.say("switch: not yet, {d} of {d} s", .{ waited, CONFIRM_LIMIT_S });
-        }
-    }
-    return false;
+    return routing.switchTo(self.context(), traefik, .{ .key = config.service, .proxy = config.proxy.?, .container = name });
 }
 
 fn retireOld(self: Run, new_name: []const u8) Error!void {

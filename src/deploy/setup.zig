@@ -54,7 +54,17 @@ const Run = struct {
 pub const Error = Remote.Error || Writer.Error;
 
 /// False when it stopped; why has been written to `out`.
-pub fn run(arena: Allocator, remote: Remote, out: *Writer, config: Config, options: Options) Error!bool {
+pub fn run(arena: Allocator, remote: Remote, out: *Writer, given: Config, options: Options) Error!bool {
+    // An accessory's route needs Traefik as much as the app's does.
+    var config = given;
+    if (config.proxy == null) {
+        for (config.accessories) |accessory| {
+            if (accessory.proxy) |proxy| {
+                config.proxy = proxy;
+                break;
+            }
+        }
+    }
     const self: Run = .{ .arena = arena, .remote = remote, .out = out, .config = config, .options = options };
     if (options.dry_run) try out.writeAll("dry run: nothing will change\n");
     if (!try ensureDocker(self)) return false;
@@ -438,6 +448,17 @@ test "ssl_redirect off needs plain HTTP to reach the app" {
         try existingWith(&h, VPS_INSPECT);
         try testing.expect(try h.setup(plain, .{}));
     }
+}
+
+test "an accessory's route needs Traefik too, when the app has none" {
+    var h = Harness.create();
+    defer h.deinit();
+    h.start();
+    try newServer(&h);
+    const config: Config = .{ .service = "s", .image = "i", .host = "h", .accessories = &.{.{ .name = "kc", .image = "k", .proxy = PROXY }} };
+    try testing.expect(try run(h.arena.allocator(), h.fake.remote(), &h.output.writer, config, .{}));
+    try testing.expect(h.fake.ran("docker run"));
+    try h.says("traefik: started");
 }
 
 test "two Traefiks, and another program on the ports, stop it" {

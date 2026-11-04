@@ -75,6 +75,16 @@ accessories:              # Optional: long-lived containers beside the app
     volumes: []           # Optional: as the app's
     networks:             # Optional: the project's `networks` when left out
       - my-app
+  auth:
+    image: quay.io/keycloak/keycloak:26
+    cmd: start
+    proxy:                # Optional: a route through Traefik, as the app's
+      host: auth.example.com
+      app_port: 8080
+      ssl: true
+      healthcheck:
+        path: /realms/master
+    boot_timeout: 120     # Seconds to prove healthy, with proxy; 60 by default
 ```
 
 A list of hosts can stand directly under `servers`, and a plain map under `env` is all
@@ -122,8 +132,13 @@ Their secrets come from the same secrets file, into an env file of their own; th
 `files` are sent from this machine and mounted read-only; their `directories` are
 folders on the server, in `~/.cowshed/accessories/<service>-<name>/directories/`, which
 `cowshed accessory remove` keeps. They join the project's `networks` unless they name
-their own, so the app reaches them by name and other apps do not. `proxy` is read and
-not used yet.
+their own, so the app reaches them by name and other apps do not.
+
+With `proxy`, an accessory also joins Traefik's network, must answer 2xx on its health
+path within `boot_timeout`, asked from inside Traefik, and then gets a route to its
+container, `cowshed-<service>-<name>.yml`, as the app does. Its name does not change
+across reboots, so neither does its route; `remove` takes it away. `setup` installs
+Traefik for an accessory's route too.
 
 ## Backups
 
