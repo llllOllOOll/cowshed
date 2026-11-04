@@ -116,7 +116,8 @@ refused: a container on them can join no other.
 
 A database, an identity server: containers that live across deploys, named
 `<service>-<name>` on the app's server (`host`, if given, must be the app's).
-`cowshed accessory boot` starts one that does not exist; a deploy never touches them.
+`cowshed accessory boot` starts one that does not exist, and `reboot` recreates one after
+its settings change, a new image tag included; a deploy never touches them.
 Their secrets come from the same secrets file, into an env file of their own; their
 `files` are sent from this machine and mounted read-only; their `directories` are
 folders on the server, in `~/.cowshed/accessories/<service>-<name>/directories/`, which

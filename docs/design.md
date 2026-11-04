@@ -23,7 +23,7 @@ on a throwaway server; `setup` and `deploy` also on a real one, for one app.
 | `cowshed remove --yes` | Route, containers, images and their files, for good. Without `--yes` it only lists them. Audit log, accessories, `replaces`, networks and what volumes hold stay |
 | `cowshed lock status / release` | The deploy lock |
 | `cowshed audit` | Who deployed what and when |
-| `cowshed accessory boot / start / stop / logs / exec / remove NAME` | Long-lived containers beside the app (database, Keycloak), left alone by deploys |
+| `cowshed accessory boot / reboot / start / stop / logs / exec / remove NAME` | Long-lived containers beside the app (database, Keycloak), left alone by deploys |
 
 ## A project in a monorepo
 
@@ -171,6 +171,15 @@ the app's `remove` clears by prefix. It is booted once and left running; its
 `directories` hold its data and outlive it. A start counts only if it still runs a few
 seconds later with no restart: `--restart unless-stopped` would otherwise show one that
 dies at once as running, between two deaths.
+
+`reboot` cannot keep the old one serving while the new one starts, as a deploy does: a
+database's files can be open in one container only. So everything that can fail comes
+first (networks, folder, env file, files); then the old container is renamed
+`<name>-replaced` and stopped, the new one started and proven, and the old one removed.
+If the new one fails, the old one gets its name back and is started again as it was. A
+`-replaced` container found at the start means a reboot that did not end, and stops it:
+which of the two holds what is needed is for a person to see. The files sent are the
+new ones even when the old container is put back.
 
 ## Drain
 

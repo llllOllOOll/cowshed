@@ -293,6 +293,7 @@ as the routes folder is no longer read: `cowshed stop` them first.
 | Take the app off the air | `cowshed stop` (a `rollback` brings it back) |
 | Start a database or another accessory | `cowshed accessory boot <name>` |
 | Run a command in one | `cowshed accessory exec <name> <command...>` |
+| Change one's image or settings | Edit the config, then `cowshed accessory reboot <name>`: a cut |
 | See what removing would take | `cowshed remove` |
 
 ## When something stops
@@ -340,7 +341,8 @@ Follow the steps above, and these rules:
   session, even by them, puts its output in front of you.
 - **Ask the owner first, each time,** for `cowshed proxy adopt --yes`, `cowshed remove --yes`,
   `cowshed lock release`, `cowshed stop`, `cowshed rollback`, and `cowshed accessory stop` or
-  `remove --yes`: the app goes down without its database. On a server other apps share,
+  `remove --yes`, and `cowshed accessory reboot`: the app goes down without its database, for
+  good or for some seconds. On a server other apps share,
   also for `cowshed setup`, the first `cowshed deploy` and any copy into a volume. An earlier
   yes does not extend to another server or another time. The owner's own rules come before this
   list.

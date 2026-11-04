@@ -100,32 +100,110 @@ pub fn boot(arena: Allocator, remote: Remote, out: *Writer, config: Config, acce
         },
         .missing => {},
     }
-    switch (try lock.acquire(arena, remote, name, try std.fmt.allocPrint(arena, "{s}, booting", .{input.who}))) {
-        .acquired => {},
+    if (!try acquire(arena, remote, out, name, input.who, "booting")) return false;
+    defer lock.release(arena, remote, name) catch {};
+    const ready = try prepare(arena, remote, out, config, accessory, input, name) orelse return false;
+    if (!try launch(arena, remote, out, config, accessory, name, ready)) {
+        try audit(arena, remote, config, input.who, try std.fmt.allocPrint(arena, "accessory {s} failed to boot", .{accessory.name}));
+        return false;
+    }
+    try audit(arena, remote, config, input.who, try std.fmt.allocPrint(arena, "accessory {s} booted", .{accessory.name}));
+    return true;
+}
+
+/// Recreates it from the config as it is now: a new image tag, other settings,
+/// new secrets or files. What it serves is cut while the new one starts, and its
+/// data, in its directories, carries over. If the new one fails, the old one is
+/// put back as it was.
+pub fn reboot(arena: Allocator, remote: Remote, out: *Writer, config: Config, accessory: Config.Accessory, input: Input) Error!bool {
+    const name = try containerName(arena, config, accessory);
+    const old = try std.fmt.allocPrint(arena, "{s}-replaced", .{name});
+    if (!try acquire(arena, remote, out, name, input.who, "rebooting")) return false;
+    defer lock.release(arena, remote, name) catch {};
+    if (try state(arena, remote, old) != .missing) {
+        try out.print("stopped: {s} is there, from a reboot that did not end: see which of it and {s} holds what you need, and remove the other\n", .{ old, name });
+        return false;
+    }
+    const before = try state(arena, remote, name);
+    // All that can fail before anything is touched.
+    const ready = try prepare(arena, remote, out, config, accessory, input, name) orelse return false;
+    if (before == .missing) {
+        try out.print("accessory: {s} does not exist; booting it\n", .{name});
+        if (!try launch(arena, remote, out, config, accessory, name, ready)) return false;
+        try audit(arena, remote, config, input.who, try std.fmt.allocPrint(arena, "accessory {s} booted", .{accessory.name}));
+        return true;
+    }
+
+    // Its data cannot be open in two containers at once: the old one stops first.
+    const renamed = try remote.run(arena, .{ .argv = &.{ "docker", "rename", name, old } });
+    if (!renamed.ok()) {
+        try out.print("stopped: could not set {s} aside: {s}\n", .{ name, trimmed(renamed.stderr) });
+        return false;
+    }
+    if (before == .running) {
+        try out.print("accessory: stopping {s}; what it serves is cut until the new one runs\n", .{name});
+        const stopped = try remote.run(arena, .{ .argv = try docker.stop(arena, old) });
+        if (!stopped.ok()) {
+            _ = try remote.run(arena, .{ .argv = &.{ "docker", "rename", old, name } });
+            try out.print("stopped: could not stop {s}: {s}; it was left as it was\n", .{ name, trimmed(stopped.stderr) });
+            return false;
+        }
+    }
+    if (!try launch(arena, remote, out, config, accessory, name, ready)) {
+        _ = try remote.run(arena, .{ .argv = &.{ "docker", "rename", old, name } });
+        if (before == .running) {
+            const back = try remote.run(arena, .{ .argv = try docker.start(arena, name) });
+            if (!back.ok()) {
+                try out.print("PUT BACK FAILED: {s} is stopped: `cowshed accessory start {s}`: {s}\n", .{ name, accessory.name, trimmed(back.stderr) });
+                try audit(arena, remote, config, input.who, try std.fmt.allocPrint(arena, "accessory {s} reboot failed, the old one stopped", .{accessory.name}));
+                return false;
+            }
+        }
+        try out.print("accessory: the old {s} is back, as it was\n", .{name});
+        try audit(arena, remote, config, input.who, try std.fmt.allocPrint(arena, "accessory {s} reboot failed, the old one back", .{accessory.name}));
+        return false;
+    }
+    _ = try remote.run(arena, .{ .argv = try docker.remove(arena, old) });
+    try audit(arena, remote, config, input.who, try std.fmt.allocPrint(arena, "accessory {s} rebooted", .{accessory.name}));
+    try out.print("accessory: rebooted {s}\n", .{name});
+    return true;
+}
+
+fn acquire(arena: Allocator, remote: Remote, out: *Writer, name: []const u8, who: []const u8, doing: []const u8) Error!bool {
+    switch (try lock.acquire(arena, remote, name, try std.fmt.allocPrint(arena, "{s}, {s}", .{ who, doing }))) {
+        .acquired => return true,
         .held => |holder| {
             try out.print("stopped: another command holds the lock of {s}: {s}\n", .{ name, holder });
             return false;
         },
     }
-    defer lock.release(arena, remote, name) catch {};
+}
 
+/// What a start needs, on the server and ready.
+const Prepared = struct {
+    env_file: ?[]const u8,
+    volumes: []const []const u8,
+};
+
+/// Its networks, its folder, its env file and its files. Nothing that runs is touched.
+fn prepare(arena: Allocator, remote: Remote, out: *Writer, config: Config, accessory: Config.Accessory, input: Input, name: []const u8) Error!?Prepared {
     for (networksOf(config, accessory)) |network| {
         if ((try remote.run(arena, .{ .argv = try docker.networkExists(arena, network) })).ok()) continue;
         try out.print("network: making {s}\n", .{network});
         const made = try remote.run(arena, .{ .argv = try docker.networkCreate(arena, network) });
         if (!made.ok()) {
             try out.print("stopped: could not make the network `{s}`: {s}\n", .{ network, trimmed(made.stderr) });
-            return false;
+            return null;
         }
     }
 
-    var prepare: std.ArrayList([]const u8) = .empty;
-    try prepare.appendSlice(arena, &.{ "sh", "-c", PREPARE, "sh", name });
-    for (accessory.directories) |directory| try prepare.append(arena, directory[0..std.mem.indexOfScalar(u8, directory, ':').?]);
-    const prepared = try remote.run(arena, .{ .argv = prepare.items });
+    var folders: std.ArrayList([]const u8) = .empty;
+    try folders.appendSlice(arena, &.{ "sh", "-c", PREPARE, "sh", name });
+    for (accessory.directories) |directory| try folders.append(arena, directory[0..std.mem.indexOfScalar(u8, directory, ':').?]);
+    const prepared = try remote.run(arena, .{ .argv = folders.items });
     if (!prepared.ok()) {
         try out.print("stopped: could not prepare its folder: {s}\n", .{trimmed(prepared.stderr)});
-        return false;
+        return null;
     }
     const folder = trimmed(prepared.stdout);
 
@@ -135,14 +213,14 @@ pub fn boot(arena: Allocator, remote: Remote, out: *Writer, config: Config, acce
         for (input.secrets) |secret| {
             if (std.mem.indexOfScalar(u8, secret.value, '\n') != null) {
                 try out.print("stopped: the secret `{s}` has a line break, which an env file cannot hold\n", .{secret.name});
-                return false;
+                return null;
             }
             try text.print(arena, "{s}={s}\n", .{ secret.name, secret.value });
         }
         const written = try remote.run(arena, .{ .argv = &.{ "sh", "-c", WRITE_ENV, "sh", folder }, .stdin = text.items });
         if (!written.ok()) {
             try out.print("stopped: could not write its env file: {s}\n", .{trimmed(written.stderr)});
-            return false;
+            return null;
         }
         try out.print("secrets: writing {d} to its env file\n", .{input.secrets.len});
         env_file = try std.fmt.allocPrint(arena, "{s}/env", .{folder});
@@ -159,12 +237,17 @@ pub fn boot(arena: Allocator, remote: Remote, out: *Writer, config: Config, acce
         const sent = try remote.run(arena, .{ .argv = &.{ "sh", "-c", WRITE_FILE, "sh", folder, stored }, .stdin = file.content });
         if (!sent.ok()) {
             try out.print("stopped: could not send the file for {s}: {s}\n", .{ file.inside, trimmed(sent.stderr) });
-            return false;
+            return null;
         }
         try volumes.append(arena, try std.fmt.allocPrint(arena, "{s}/files/{s}:{s}:ro", .{ folder, stored, file.inside }));
     }
     try volumes.appendSlice(arena, accessory.volumes);
+    return .{ .env_file = env_file, .volumes = volumes.items };
+}
 
+/// Starts the container and waits to see it stay up. If not, it is shown and
+/// removed, and its directories stay as they are.
+fn launch(arena: Allocator, remote: Remote, out: *Writer, config: Config, accessory: Config.Accessory, name: []const u8, ready: Prepared) Error!bool {
     try out.print("accessory: starting {s} ({s})\n", .{ name, accessory.image });
     const started = try remote.run(arena, .{ .argv = try docker.runAccessory(arena, .{
         .name = name,
@@ -173,9 +256,9 @@ pub fn boot(arena: Allocator, remote: Remote, out: *Writer, config: Config, acce
         .accessory = accessory.name,
         .networks = networksOf(config, accessory),
         .publish = accessory.port,
-        .env_file = env_file,
+        .env_file = ready.env_file,
         .clear_env = accessory.env.clear,
-        .volumes = volumes.items,
+        .volumes = ready.volumes,
         .cmd = accessory.cmd,
     }) });
     if (!started.ok()) {
@@ -190,10 +273,8 @@ pub fn boot(arena: Allocator, remote: Remote, out: *Writer, config: Config, acce
         try out.print("--- its logs\n{s}{s}---\n", .{ last.stdout, last.stderr });
         _ = try remote.run(arena, .{ .argv = try docker.remove(arena, name) });
         try out.print("stopped: {s} exited at once; its directories stay as they are\n", .{name});
-        try audit(arena, remote, config, input.who, try std.fmt.allocPrint(arena, "accessory {s} failed to boot", .{accessory.name}));
         return false;
     }
-    try audit(arena, remote, config, input.who, try std.fmt.allocPrint(arena, "accessory {s} booted", .{accessory.name}));
     try out.print("accessory: {s} runs\n", .{name});
     return true;
 }
@@ -348,6 +429,15 @@ const Harness = struct {
         if (std.mem.indexOf(u8, self.output.written(), text) == null) {
             std.debug.print("output:\n{s}\n", .{self.output.written()});
             return error.TestExpectedOutput;
+        }
+    }
+
+    fn before(self: *Harness, first: []const u8, second: []const u8) !void {
+        const a = self.fake.position(first) orelse return error.TestFirstNotRun;
+        const b = self.fake.position(second) orelse return error.TestSecondNotRun;
+        if (a >= b) {
+            std.debug.print("`{s}` came after `{s}`\n", .{ first, second });
+            return error.TestWrongOrder;
         }
     }
 
@@ -511,4 +601,83 @@ test "remove: tells without --yes; with it takes the container and its files, ne
     try testing.expect(std.mem.indexOf(u8, files, "\"$d/env\" \"$d/files\"") != null);
     try testing.expect(std.mem.indexOf(u8, files, "directories") == null);
     try h.says("kept the directory data:/var/lib/postgresql/data");
+}
+
+test "reboot: prepared first, the old one set aside and stopped, the new one proven, then the old removed" {
+    var h = harness();
+    defer h.arena.deinit();
+    try h.begin();
+    try h.on("{{.State.Running}} app-db", 0, "true\n");
+    try h.on("{{.State.Running}} app-db-replaced", 1, "");
+    const a = h.arena.allocator();
+    try testing.expect(try reboot(a, h.fake.remote(), &h.output.writer, CONFIG, DB, INPUT));
+    try h.before("cat > \"$1/files/$2\"", "docker rename app-db app-db-replaced");
+    try h.before("docker rename app-db app-db-replaced", "docker stop app-db-replaced");
+    try h.before("docker stop app-db-replaced", "docker run -d --name app-db");
+    try h.before("sleep \"$1\"", "docker rm -f app-db-replaced");
+    try testing.expect(h.fake.ran("accessory db rebooted"));
+    try h.says("what it serves is cut until the new one runs");
+}
+
+test "reboot: a new one that fails puts the old one back, running" {
+    var h = harness();
+    defer h.arena.deinit();
+    try h.begin();
+    try h.on("{{.State.Running}} app-db", 0, "true\n");
+    try h.on("{{.State.Running}} app-db-replaced", 1, "");
+    try h.on("sleep \"$1\"", 0, "true 1\n");
+    const a = h.arena.allocator();
+    try testing.expect(!try reboot(a, h.fake.remote(), &h.output.writer, CONFIG, DB, INPUT));
+    try h.before("docker rm -f app-db", "docker rename app-db-replaced app-db");
+    try h.before("docker rename app-db-replaced app-db", "docker start app-db");
+    try testing.expect(!h.fake.ran("docker rm -f app-db-replaced"));
+    try h.says("the old app-db is back");
+    try testing.expect(h.fake.ran("reboot failed, the old one back"));
+}
+
+test "reboot: a stopped one comes back stopped; a missing one is booted; a leftover stops it" {
+    {
+        var h = harness();
+        defer h.arena.deinit();
+        try h.begin();
+        try h.on("{{.State.Running}} app-db", 0, "false\n");
+        try h.on("{{.State.Running}} app-db-replaced", 1, "");
+        try h.on("sleep \"$1\"", 0, "false 0\n");
+        try testing.expect(!try reboot(h.arena.allocator(), h.fake.remote(), &h.output.writer, CONFIG, DB, INPUT));
+        try testing.expect(!h.fake.ran("docker stop"));
+        try testing.expect(!h.fake.ran("docker start"));
+        try testing.expect(h.fake.ran("docker rename app-db-replaced app-db"));
+    }
+    {
+        var h = harness();
+        defer h.arena.deinit();
+        try h.begin();
+        try h.on("{{.State.Running}} app-db-replaced", 1, "");
+        try testing.expect(try reboot(h.arena.allocator(), h.fake.remote(), &h.output.writer, CONFIG, DB, INPUT));
+        try testing.expect(!h.fake.ran("docker rename"));
+        try h.says("does not exist; booting it");
+    }
+    {
+        var h = harness();
+        defer h.arena.deinit();
+        try h.begin();
+        try h.on("{{.State.Running}} app-db", 0, "true\n");
+        try h.on("{{.State.Running}} app-db-replaced", 0, "false\n");
+        try testing.expect(!try reboot(h.arena.allocator(), h.fake.remote(), &h.output.writer, CONFIG, DB, INPUT));
+        try h.says("from a reboot that did not end");
+        try testing.expect(!h.fake.ran("docker run"));
+        try testing.expect(!h.fake.ran("docker rename"));
+    }
+}
+
+test "reboot: a failure before anything is touched leaves the old one running" {
+    var h = harness();
+    defer h.arena.deinit();
+    try h.begin();
+    try h.on("{{.State.Running}} app-db", 0, "true\n");
+    try h.on("{{.State.Running}} app-db-replaced", 1, "");
+    try h.on("cat > \"$1/files/$2\"", 1, "");
+    try testing.expect(!try reboot(h.arena.allocator(), h.fake.remote(), &h.output.writer, CONFIG, DB, INPUT));
+    try testing.expect(!h.fake.ran("docker rename"));
+    try testing.expect(!h.fake.ran("docker stop"));
 }

@@ -17,6 +17,7 @@ const MAX_FILE_BYTES = 4 * 1024 * 1024;
 
 pub const Action = union(enum) {
     boot,
+    reboot,
     start,
     stop,
     logs: []const u8,
@@ -54,11 +55,11 @@ pub fn parse(args: []const []const u8) Parsed {
     const action = rest[0];
     options.name = rest[1];
     const after = rest[2..];
-    const all_allowed = eql(action, "boot") or eql(action, "start") or eql(action, "stop");
+    const all_allowed = eql(action, "boot") or eql(action, "reboot") or eql(action, "start") or eql(action, "stop");
     if (eql(options.name, "all") and !all_allowed) return .{ .invalid = "all" };
-    options.action = if (eql(action, "boot") or eql(action, "start") or eql(action, "stop")) blk: {
+    options.action = if (all_allowed) blk: {
         if (after.len != 0) return .{ .invalid = after[0] };
-        break :blk if (eql(action, "boot")) .boot else if (eql(action, "start")) .start else .stop;
+        break :blk if (eql(action, "boot")) .boot else if (eql(action, "reboot")) .reboot else if (eql(action, "start")) .start else .stop;
     } else if (eql(action, "logs")) blk: {
         if (after.len == 0) break :blk .{ .logs = DEFAULT_LOG_LINES };
         if (after.len != 2 or !eql(after[0], "--lines")) return .{ .invalid = after[0] };
@@ -113,11 +114,12 @@ pub fn run(arena: Allocator, io: std.Io, environ: *const std.process.Environ.Map
 
 fn one(arena: Allocator, io: std.Io, environ: *const std.process.Environ.Map, out: *std.Io.Writer, config: Config, accessory: Config.Accessory, options: Options, remote: @import("../remote/Remote.zig"), who: []const u8) !bool {
     return switch (options.action) {
-        .boot => {
+        .boot, .reboot => {
             const path = options.secrets_path orelse config.secrets orelse secrets.DEFAULT_PATH;
             const resolved = try deploy.resolveSecrets(arena, io, environ, out, config, accessory.env.secret, path) orelse return false;
             const files = try readFiles(arena, io, out, accessory) orelse return false;
-            return core.boot(arena, remote, out, config, accessory, .{ .secrets = resolved, .files = files, .who = who });
+            const input: core.Input = .{ .secrets = resolved, .files = files, .who = who };
+            return if (options.action == .boot) core.boot(arena, remote, out, config, accessory, input) else core.reboot(arena, remote, out, config, accessory, input);
         },
         .start => core.start(arena, remote, out, config, accessory, who),
         .stop => core.stop(arena, remote, out, config, accessory, who),
@@ -157,6 +159,7 @@ test "the words of each action" {
     const exec = parse(&.{ "accessory", "exec", "db", "--", "psql", "-c", "select 1" }).options.action.exec;
     try testing.expectEqual(3, exec.len);
     try testing.expectEqualStrings("psql", exec[0]);
+    try testing.expectEqual(.reboot, std.meta.activeTag(parse(&.{ "accessory", "reboot", "all" }).options.action));
     try testing.expect(!parse(&.{ "accessory", "remove", "db" }).options.action.remove);
     try testing.expect(parse(&.{ "accessory", "remove", "db", "--yes" }).options.action.remove);
 }

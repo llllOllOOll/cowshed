@@ -106,6 +106,27 @@ grep -q "accessory start db" "$WORK/out" || fail "it did not say to start it"
 cowshed accessory start db
 [ "$(inside docker inspect -f '{{.Id}}' acc-db)" = "$id" ] || fail "start made another container"
 
+echo "== reboot: the new settings, the data carried over, the old one gone"
+id=$(inside docker inspect -f '{{.Id}}' acc-db)
+sed -i 's/DB_USER: app/DB_USER: changed/' "$APP/config/deploy.yml"
+cowshed accessory reboot db | tee "$WORK/out"
+[ "$(inside docker exec acc-db printenv DB_USER)" = changed ] || fail "the new settings did not take"
+[ "$(inside docker inspect -f '{{.Id}}' acc-db)" != "$id" ] || fail "not a new container"
+if inside docker inspect acc-db-replaced > /dev/null 2>&1; then fail "the old one stayed"; fi
+[ "$(inside cat "$FOLDER/directories/data/password")" = hidden-db-password ] || fail "the data did not carry over"
+inside grep -q "accessory db rebooted" /root/.cowshed/audit-acc.log || fail "not in the audit log"
+
+echo "== a reboot that fails: the old one back, running"
+id=$(inside docker inspect -f '{{.Id}}' acc-db)
+cp "$APP/config/deploy.yml" "$WORK/good.yml"
+sed -i "s|exec sleep 600|echo broken reboot; exit 1|" "$APP/config/deploy.yml"
+if cowshed accessory reboot db > "$WORK/out"; then fail "a broken reboot passed"; fi
+grep -q "broken reboot" "$WORK/out" || fail "its logs were not shown"
+grep -q "the old acc-db is back" "$WORK/out" || fail "wrong reason: $(cat "$WORK/out")"
+[ "$(inside docker inspect -f '{{.Id}} {{.State.Running}}' acc-db)" = "$id true" ] || fail "the old one is not back and running"
+if inside docker inspect acc-db-replaced > /dev/null 2>&1; then fail "a container set aside stayed"; fi
+cp "$WORK/good.yml" "$APP/config/deploy.yml"
+
 echo "== remove: only with --yes, its directory kept, and a boot finds it again"
 if cowshed accessory remove db > "$WORK/out"; then fail "removed without --yes"; fi
 grep -q "the directory data:/data stays" "$WORK/out" || fail "it did not say the directory stays"

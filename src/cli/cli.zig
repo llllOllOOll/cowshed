@@ -51,6 +51,7 @@ pub const USAGE =
     \\    (each with -c, --config <path> before its other words)
     \\  accessory <action> <name>  A long-lived container beside the app, such as its database
     \\    boot <name|all>        Start it if it does not exist: folders, secrets, files
+    \\    reboot <name|all>      Recreate it from the config; a cut, the old one back if it fails
     \\    start | stop <name|all>   Start or stop it; it stays, with what it holds
     \\    logs <name> [--lines <n>]  Its latest logs
     \\    exec <name> <command...>   A command in it, while it runs

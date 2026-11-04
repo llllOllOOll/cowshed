@@ -91,6 +91,11 @@ config's long-lived containers, named `<service>-<name>`:
 - `boot <name|all>` starts one that does not exist: its networks, folders, env file
   and files, then the container, which must still run, never restarted, a few seconds
   later. One that runs is left as it is; one that is stopped is told to `start`.
+- `reboot <name|all>` recreates it from the config as it is now: a new image tag, other
+  settings, new secrets or files. Its data, in its directories, carries over. All that can
+  fail is done first; then the old container is set aside and stopped, **which cuts what it
+  serves**, and the new one must stay up. If it does not, the old one is put back as it
+  was. One that does not exist is booted.
 - `start <name|all>` and `stop <name|all>`: the same container, with what it holds.
 - `logs <name> [--lines <n>]`: its latest logs.
 - `exec <name> <command...>`: a command in the running container, as a database's own
