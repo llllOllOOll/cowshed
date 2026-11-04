@@ -8,6 +8,7 @@ const docker = @import("../docker/commands.zig");
 const detect = @import("../proxy/detect.zig");
 const route = @import("../proxy/route.zig");
 const lock = @import("lock.zig");
+const deploy = @import("deploy.zig");
 const Allocator = std.mem.Allocator;
 const Writer = std.Io.Writer;
 
@@ -111,12 +112,14 @@ pub fn exec(arena: Allocator, remote: Remote, out: *Writer, config: Config, vers
 
     var argv: std.ArrayList([]const u8) = .empty;
     try argv.appendSlice(arena, &.{ "docker", "run", "--rm", "--label", try std.fmt.allocPrint(arena, "oneoff={s}", .{config.service}) });
+    var traefik: ?detect.Traefik = null;
     if (config.proxy) |proxy| {
         switch (try detect.detect(arena, remote, proxy)) {
-            .traefik => |found| try argv.appendSlice(arena, &.{ "--network", found.network }),
+            .traefik => |found| traefik = found,
             else => {},
         }
     }
+    try docker.appendNetworks(arena, &argv, try deploy.networksOf(arena, config, traefik));
     for (config.env.clear) |env| {
         try argv.appendSlice(arena, &.{ "--env", try std.fmt.allocPrint(arena, "{s}={s}", .{ env.name, env.value }) });
     }
@@ -285,6 +288,17 @@ test "exec: the live version, its env file, its words whole, its exit code" {
     try testing.expect(!try exec(a, h.fake.remote(), &h.output.writer, config, "v1", &.{"x"}));
     try testing.expect(h.fake.ran("app:v1 x"));
     try h.says("exit code 3");
+}
+
+test "exec joins the project's networks too" {
+    var h = harness();
+    defer h.arena.deinit();
+    try h.begin();
+    var config = CONFIG;
+    config.networks = &.{"own"};
+    try testing.expect(try exec(h.arena.allocator(), h.fake.remote(), &h.output.writer, config, null, &.{"x"}));
+    const line = h.fake.calls.items[h.fake.position("docker run --rm").?].line;
+    try testing.expect(std.mem.indexOf(u8, line, "--network own") != null);
 }
 
 test "exec with nothing live needs a version" {

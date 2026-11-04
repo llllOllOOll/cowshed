@@ -194,6 +194,30 @@ pub fn run(arena: Allocator, remote: Remote, out: *Writer, input: Input) Error!b
     return done;
 }
 
+/// Traefik's network first, then the project's own, each once.
+pub fn networksOf(arena: Allocator, config: Config, traefik: ?detect.Traefik) Allocator.Error![]const []const u8 {
+    var networks: std.ArrayList([]const u8) = .empty;
+    if (traefik) |found| try networks.append(arena, found.network);
+    for (config.networks) |network| {
+        for (networks.items) |already| {
+            if (std.mem.eql(u8, already, network)) break;
+        } else try networks.append(arena, network);
+    }
+    return networks.items;
+}
+
+/// The project's networks are its own: made here if missing, used as they are
+/// if not, and never removed.
+fn ensureNetworks(self: Run) Error!bool {
+    for (self.config().networks) |network| {
+        if ((try self.ask(try docker.networkExists(self.arena, network))).ok()) continue;
+        try self.say("network: making {s}", .{network});
+        const made = try self.ask(try docker.networkCreate(self.arena, network));
+        if (!made.ok()) return self.stop("could not make the network `{s}`: {s}", .{ network, std.mem.trimEnd(u8, made.stderr, "\r\n") });
+    }
+    return true;
+}
+
 fn releaseLock(self: Run) void {
     lock.release(self.arena, self.remote, self.config().service) catch {
         self.say("notice: could not release the lock: `cowshed lock release`", .{}) catch {};
@@ -214,6 +238,7 @@ fn deployLocked(self: Run, traefik: ?detect.Traefik) Error!bool {
         else => return self.stop("sending the image: {t}", .{err}),
     };
     if (!sent) return false;
+    if (!try ensureNetworks(self)) return false;
 
     const containers = try self.ask(try docker.listAll(self.arena, config.service));
     if (!containers.ok()) return self.stop("could not list containers: {s}", .{containers.stderr});
@@ -248,7 +273,7 @@ fn deployLocked(self: Run, traefik: ?detect.Traefik) Error!bool {
         .role = config.role,
         .version = version,
         .sources = self.input.sources,
-        .network = if (traefik) |found| found.network else null,
+        .networks = try networksOf(self.arena, config, traefik),
         .cpus = config.cpus,
         .memory = config.memory,
         .env_file = env_file,
@@ -320,7 +345,7 @@ fn runMigration(self: Run, migrate: Config.Migrate, name: []const u8, env_file: 
         .service = config.service,
         .command = migrate.command,
         .timeout_s = migrate.timeout_s,
-        .network = if (traefik) |found| found.network else null,
+        .networks = try networksOf(self.arena, config, traefik),
         .cpus = config.cpus,
         .memory = config.memory,
         .env_file = env_file,
@@ -898,6 +923,45 @@ test "a migration: new image, after sending, before the new version, with the ap
     try h.says("2 applied");
     try h.says("migrate: done");
     try testing.expect(h.fake.ran("migrated"));
+}
+
+test "the project's networks: made if missing, used if there, the new version and its migration born on all" {
+    var h = harness();
+    defer h.arena.deinit();
+    try h.begin();
+    try h.on("network inspect --format {{.Name}} own", 1, "");
+    try h.on("umask 077", 0, "/home/u/.cowshed/env/app-web-v2");
+    try h.on("sh 60 app-web-v2-migrate docker run", 0, "");
+    var config = PROXIED;
+    // Traefik's own, named again, is not joined twice.
+    config.networks = &.{ "own", "public", "theirs" };
+    config.migrate = .{ .command = "./app", .timeout_s = 60 };
+    h.migrating = true;
+    try testing.expect(try h.deploy(config));
+    try testing.expect(h.fake.ran("docker network create own"));
+    try testing.expect(!h.fake.ran("docker network create theirs"));
+    try testing.expect(!h.fake.ran("docker network create public"));
+    try h.before("docker network create own", "sh 60 app-web-v2-migrate docker run");
+    for ([_][]const u8{ "sh 60 app-web-v2-migrate docker run", "docker run -d" }) |container| {
+        const line = h.fake.calls.items[h.fake.position(container).?].line;
+        try testing.expect(std.mem.indexOf(u8, line, "--network public --network own --network theirs") != null);
+        try testing.expectEqual(1, std.mem.count(u8, line, "--network public"));
+    }
+}
+
+test "a network that cannot be made stops it before any container, the old one untouched" {
+    var h = harness();
+    defer h.arena.deinit();
+    try h.begin();
+    try h.on("network inspect --format {{.Name}} own", 1, "");
+    try h.on("docker network create own", 1, "");
+    var config = PROXIED;
+    config.networks = &.{"own"};
+    try testing.expect(!try h.deploy(config));
+    try h.says("could not make the network `own`");
+    try testing.expect(!h.fake.ran("docker run -d"));
+    try testing.expect(!h.fake.ran("docker stop"));
+    try testing.expect(h.fake.ran("rm -rf"));
 }
 
 test "a migration that fails: no new version, and the old one untouched" {

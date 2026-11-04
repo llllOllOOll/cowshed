@@ -43,7 +43,9 @@ pub const AppContainer = struct {
     version: []const u8,
     /// What it was made from, when known.
     sources: ?[]const u8 = null,
-    network: ?[]const u8 = null,
+    /// Traefik's first, then the project's own: the container is born on all of
+    /// them, so the app never starts without its database.
+    networks: []const []const u8 = &.{},
     cpus: ?[]const u8 = null,
     memory: ?[]const u8 = null,
     env_file: ?[]const u8 = null,
@@ -55,6 +57,11 @@ pub const AppContainer = struct {
 
 pub const Pair = @import("../config/Config.zig").Pair;
 
+/// One `--network` each: Docker 25 and later join them all at the start.
+pub fn appendNetworks(arena: Allocator, argv: *std.ArrayList([]const u8), networks: []const []const u8) Allocator.Error!void {
+    for (networks) |network| try argv.appendSlice(arena, &.{ "--network", network });
+}
+
 pub fn appendVolumes(arena: Allocator, argv: *std.ArrayList([]const u8), volumes: []const []const u8) Allocator.Error!void {
     for (volumes) |volume| try argv.appendSlice(arena, &.{ "--volume", volume });
 }
@@ -64,7 +71,7 @@ pub fn appendVolumes(arena: Allocator, argv: *std.ArrayList([]const u8), volumes
 pub fn runApp(arena: Allocator, app: AppContainer) Allocator.Error![]const []const u8 {
     var argv: std.ArrayList([]const u8) = .empty;
     try argv.appendSlice(arena, &.{ "docker", "run", "-d", "--name", app.name, "--restart", "unless-stopped" });
-    if (app.network) |network| try argv.appendSlice(arena, &.{ "--network", network });
+    try appendNetworks(arena, &argv, app.networks);
     if (app.cpus) |cpus| try argv.appendSlice(arena, &.{ "--cpus", cpus });
     if (app.memory) |memory| try argv.appendSlice(arena, &.{ "--memory", memory });
     try argv.appendSlice(arena, &.{
@@ -94,7 +101,7 @@ pub const Migration = struct {
     service: []const u8,
     command: []const u8,
     timeout_s: u32,
-    network: ?[]const u8 = null,
+    networks: []const []const u8 = &.{},
     cpus: ?[]const u8 = null,
     memory: ?[]const u8 = null,
     env_file: ?[]const u8 = null,
@@ -124,7 +131,7 @@ const WITHIN_LIMIT =
 pub fn runMigration(arena: Allocator, migration: Migration) Allocator.Error![]const []const u8 {
     var argv: std.ArrayList([]const u8) = .empty;
     try argv.appendSlice(arena, &.{ "sh", "-c", WITHIN_LIMIT, "sh", try std.fmt.allocPrint(arena, "{d}", .{migration.timeout_s}), migration.name, "docker", "run", "--rm", "--name", migration.name, "--label", try std.fmt.allocPrint(arena, "oneoff={s}", .{migration.service}) });
-    if (migration.network) |network| try argv.appendSlice(arena, &.{ "--network", network });
+    try appendNetworks(arena, &argv, migration.networks);
     if (migration.cpus) |cpus| try argv.appendSlice(arena, &.{ "--cpus", cpus });
     if (migration.memory) |memory| try argv.appendSlice(arena, &.{ "--memory", memory });
     for (migration.clear_env) |env| {
@@ -200,7 +207,7 @@ test "a container's command: labels, limits, env, and its words whole" {
         .service = "s",
         .role = "web",
         .version = "1",
-        .network = "net",
+        .networks = &.{ "net", "own" },
         .memory = "2g",
         .env_file = "/e",
         .clear_env = &.{.{ .name = "A", .value = "b c" }},
@@ -208,7 +215,7 @@ test "a container's command: labels, limits, env, and its words whole" {
         .cmd = "--nearest 24 --name \"two words\"\n--empty ''",
     });
     const line = try std.mem.join(a, "|", argv);
-    try testing.expect(std.mem.indexOf(u8, line, "--name|s-web-1|--restart|unless-stopped|--network|net|--memory|2g") != null);
+    try testing.expect(std.mem.indexOf(u8, line, "--name|s-web-1|--restart|unless-stopped|--network|net|--network|own|--memory|2g") != null);
     try testing.expect(std.mem.indexOf(u8, line, "--label|version=1") != null);
     try testing.expect(std.mem.indexOf(u8, line, "--env|A=b c|--env-file|/e|--volume|/srv/a b:/data|--volume|n:/m:ro|s:1|--nearest|24|--name|two words|--empty|") != null);
     try testing.expectEqualStrings("", argv[argv.len - 1]);

@@ -81,7 +81,7 @@ Its exit code decides the result. Its output comes when it ends.
 
 **`cowshed remove [--yes]`** removes the app from the server for good: route, containers,
 images and their files. Without `--yes` it only lists them. The audit log, a container
-named in `replaces` and what volumes hold stay.
+named in `replaces`, the project's networks and what volumes hold stay.
 
 **`cowshed lock status`**, **`cowshed lock release`** say who holds the deploy lock and
 free it after a deploy that died.

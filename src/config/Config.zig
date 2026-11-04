@@ -99,6 +99,9 @@ labels: []const Pair = &.{},
 /// `/on/server:/in/container` or `name:/in/container`, with `:ro` and such after.
 /// What it holds is never Cowshed's: nothing here removes it.
 volumes: []const []const u8 = &.{},
+/// Networks of the project's own, beside Traefik's: what only the app should
+/// reach, such as its database. Made if missing, never removed.
+networks: []const []const u8 = &.{},
 cpus: ?[]const u8 = null,
 memory: ?[]const u8 = null,
 env: Env = .{},
@@ -326,7 +329,7 @@ const Reader = struct {
             "service",        "image",         "servers",  "registry", "builder", "env",
             "proxy",          "ssh",           "boot",     "cpus",     "memory",  "accessories",
             "deploy_timeout", "drain_timeout", "replaces", "secrets",  "branch",  "secrets",
-            "sources",        "volumes",       "env_file", "migrate",  "backup",
+            "sources",        "volumes",       "env_file", "migrate",  "backup",  "networks",
         });
 
         var config: Config = .{
@@ -341,6 +344,7 @@ const Reader = struct {
             .branch = try self.string(root, "branch", ""),
             .sources = try self.strings(root, "sources", ""),
             .volumes = try self.strings(root, "volumes", ""),
+            .networks = try self.strings(root, "networks", ""),
             .env = try self.readEnv(root, ""),
             .proxy = try self.readProxy(root, ""),
             .backup = try self.readBackup(root),
@@ -355,6 +359,20 @@ const Reader = struct {
                 for (entry.value.list, 0..) |item, i| {
                     if (i < config.volumes.len and !isVolume(config.volumes[i])) {
                         try self.problem(item.line, "a volume is `/on/server:/in/container` or `name:/in/container`, with `:ro`, `:rw`, `:z` or `:Z` after: `{s}`", .{config.volumes[i]});
+                    }
+                }
+            }
+        }
+
+        if (root.get("networks")) |entry| {
+            if (entry.value == .list) {
+                for (entry.value.list, 0..) |item, i| {
+                    if (i >= config.networks.len) break;
+                    const network = config.networks[i];
+                    if (!isNetworkName(network)) {
+                        try self.problem(item.line, "a network's name is letters, digits, `_`, `.` and `-`, starting with a letter or digit: `{s}`", .{network});
+                    } else if (isDockerOwnNetwork(network)) {
+                        try self.problem(item.line, "`{s}` is Docker's own and cannot sit beside another network: name one of the project's", .{network});
                     }
                 }
             }
@@ -485,6 +503,23 @@ fn isVolume(text: []const u8) bool {
         }
     }
     return true;
+}
+
+/// As Docker accepts them.
+fn isNetworkName(name: []const u8) bool {
+    if (name.len == 0 or !std.ascii.isAlphanumeric(name[0])) return false;
+    for (name) |c| {
+        if (!(std.ascii.isAlphanumeric(c) or c == '_' or c == '.' or c == '-')) return false;
+    }
+    return true;
+}
+
+/// A container on one of these cannot join another network as well.
+fn isDockerOwnNetwork(name: []const u8) bool {
+    for ([_][]const u8{ "host", "none", "bridge" }) |own| {
+        if (std.mem.eql(u8, name, own)) return true;
+    }
+    return false;
 }
 
 pub fn isSafeName(name: []const u8) bool {
@@ -620,6 +655,28 @@ test "volumes" {
         try testing.expect(std.mem.indexOf(u8, problems.items[0].message, "a volume is") != null);
     }
     try expectProblem(MINIMAL ++ "volumes: /a:/b\n", "`.volumes` must be a list");
+}
+
+test "networks of the project's own" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var problems: std.ArrayList(Problem) = .empty;
+    const config = try parse(arena.allocator(), MINIMAL ++ "networks:\n  - orbitx\n  - a_b.c-1\n", &problems);
+    try testing.expectEqual(2, config.networks.len);
+    try testing.expectEqualStrings("orbitx", config.networks[0]);
+    for ([_][]const u8{ "-a", ".a", "a b", "a/b", "a:b" }) |bad| {
+        const source = try std.fmt.allocPrint(arena.allocator(), MINIMAL ++ "networks:\n  - \"{s}\"\n", .{bad});
+        problems = .empty;
+        try testing.expectError(error.InvalidConfig, parse(arena.allocator(), source, &problems));
+        try testing.expect(std.mem.indexOf(u8, problems.items[0].message, "a network's name") != null);
+    }
+    for ([_][]const u8{ "host", "none", "bridge" }) |own| {
+        const source = try std.fmt.allocPrint(arena.allocator(), MINIMAL ++ "networks:\n  - {s}\n", .{own});
+        problems = .empty;
+        try testing.expectError(error.InvalidConfig, parse(arena.allocator(), source, &problems));
+        try testing.expect(std.mem.indexOf(u8, problems.items[0].message, "is Docker's own") != null);
+    }
+    try expectProblem(MINIMAL ++ "networks: orbitx\n", "`.networks` must be a list");
 }
 
 test "an accessory" {

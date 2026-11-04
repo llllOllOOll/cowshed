@@ -395,4 +395,24 @@ rm "$backup_config"
 cowshed remove --yes > /dev/null
 inside test -d "$backups" || fail "remove took the backups"
 
+echo "== a network of the project's own: made, joined beside Traefik's, kept by remove"
+net_config="$APP/config/networks.yml"
+cp "$APP/config/deploy.yml" "$net_config"
+printf 'networks:\n  - e2e-own\n' >> "$net_config"
+inside docker network rm e2e-own >/dev/null 2>&1 || true
+cowshed deploy --force -c "$net_config" > "$WORK/out" || { cat "$WORK/out"; fail "the deploy with a network failed"; }
+grep -q "^network: making e2e-own" "$WORK/out" || fail "it did not make the network"
+[ -n "$(serving)" ] || fail "not serving through Traefik's network"
+inside docker run -d --name e2e-neighbour --network e2e-own alpine sleep 600 >/dev/null
+app=$(live_containers | tr -d ' ')
+inside docker exec "$app" python3 -c 'import socket; socket.gethostbyname("e2e-neighbour")' || fail "the app does not reach its network"
+inside docker run --rm --network "$(inside docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' "$app" | tr ' ' '\n' | grep -v e2e-own | head -1)" alpine \
+	nslookup e2e-neighbour >/dev/null 2>&1 && fail "Traefik's network reaches the private one"
+cowshed deploy --force -c "$net_config" > "$WORK/out" || { cat "$WORK/out"; fail "a second deploy with the network failed"; }
+grep -q "^network: making" "$WORK/out" && fail "it made the network again"
+cowshed remove -c "$net_config" --yes > /dev/null
+inside docker network inspect e2e-own >/dev/null || fail "remove took the network"
+inside docker rm -f e2e-neighbour >/dev/null
+rm "$net_config"
+
 echo "e2e passed"

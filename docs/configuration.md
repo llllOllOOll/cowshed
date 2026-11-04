@@ -53,6 +53,8 @@ builder:
 volumes:                  # Optional: what must outlive a version
   - /var/lib/my-app:/data   # A path on the server, or a Docker volume's name
   - shared:/shared:ro       # Then `:ro`, `:rw`, `:z` or `:Z`, if needed
+networks:                 # Optional: the project's own, beside Traefik's
+  - my-app                # Made if missing, never removed
 cpus: 2                   # Optional limits
 memory: 1g
 deploy_timeout: 30        # Seconds for the new version to prove healthy
@@ -82,6 +84,18 @@ use them together, for up to `drain_timeout` seconds: a database file must allow
 and a migration on start reaches the old version's data even if the new one then fails.
 A rollback changes the code, not what volumes hold. [Usage](usage.md#data-that-must-outlive-a-version)
 covers a first copy and backups.
+
+## Networks
+
+The app is on Traefik's network, shared by every app on the server, so that Traefik
+reaches it. `networks` adds networks of the project's own, for what only the app should
+reach, such as its database: what sits on them is out of other apps' sight, and Traefik's.
+
+Every version, its migration and `cowshed exec` join them all from the start, so the app
+never runs without its database. A network missing is made by `deploy`; one that exists is
+used as it is, whoever made it. `remove` leaves them: something else may be on one. Docker
+25 or later joins several networks at once. `host`, `none` and `bridge` are Docker's own and
+refused: a container on them can join no other.
 
 ## Backups
 

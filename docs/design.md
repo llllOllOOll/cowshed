@@ -20,7 +20,7 @@ on a throwaway server; `setup` and `deploy` also on a real one, for one app.
 | `cowshed exec [--version V] CMD` | A one-off in a new container of a version, with the live one's variables, network and env file; its exit code decides. For migrations: OrbitX runs `SPIDER_MIGRATE=1 ./orbitx` before deploying |
 | `cowshed prune` | Keeps the last 3 stopped containers; removes the images, blobs and lists of every other version, failed deploys' too |
 | `cowshed stop` | Removes the route and stops what runs; containers stay, a `rollback` brings one back |
-| `cowshed remove --yes` | Route, containers, images and their files, for good. Without `--yes` it only lists them. Audit log, accessories, `replaces` and what volumes hold stay |
+| `cowshed remove --yes` | Route, containers, images and their files, for good. Without `--yes` it only lists them. Audit log, accessories, `replaces`, networks and what volumes hold stay |
 | `cowshed lock status / release` | The deploy lock |
 | `cowshed audit` | Who deployed what and when |
 | `cowshed accessory boot / stop / logs / exec NAME` | Long-lived services (database, Keycloak) |
@@ -154,6 +154,13 @@ What the source says this costs us, and what Cowshed does about it:
 version keeps serving until the new one is proven, but it shares these: its files are
 untouched only as far as the new version leaves them so. What they hold is the owner's,
 so no command removes it.
+
+## Networks
+
+The app joins Traefik's network, then the project's own (`networks`), all in its `docker
+run`: joining one later would let it start without its database. Traefik's network is
+shared by every app on the server, so a database belongs on a network of the project's,
+where only what needs it sees it. A missing one is made; none is removed.
 
 ## Drain
 
