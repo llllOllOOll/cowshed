@@ -21,6 +21,8 @@ pub const Options = struct {
     force: bool = false,
     /// Runs the config's backup and migration before the new version.
     migrate: bool = false,
+    /// Builds and sends the version, and starts nothing.
+    stage: bool = false,
 };
 
 const MAX_SECRETS_BYTES = 1024 * 1024;
@@ -54,11 +56,15 @@ pub fn run(arena: Allocator, io: std.Io, environ: *const std.process.Environ.Map
     for (config.notices) |notice| try out.print("notice: {s}\n", .{notice});
     if (config.accessories.len > 0) try out.writeAll("notice: accessories are left as they are: `cowshed accessory boot` starts them\n");
 
+    if (options.stage and options.migrate) {
+        try out.writeAll("stopped: `--stage` starts nothing, so it runs no migration: stage, try it with `cowshed exec`, then `cowshed deploy --migrate`\n");
+        return false;
+    }
     if (options.migrate and config.migrate == null) {
         try out.writeAll("stopped: `--migrate` needs `migrate` in the config: nothing changed\n");
         return false;
     }
-    if (!options.migrate and config.migrate != null) {
+    if (!options.migrate and !options.stage and config.migrate != null) {
         try out.writeAll("notice: no `--migrate`: no backup and no migration. If this version has one, deploy with it\n");
     }
 
@@ -92,6 +98,10 @@ pub fn run(arena: Allocator, io: std.Io, environ: *const std.process.Environ.Map
             try out.print("server {s}: {t}: {s}\n", .{ config.host, err, ssh.connection_error });
             return false;
         };
+        if (live and options.stage) {
+            try out.print("nothing to stage: what runs was made from {s}\n", .{made_from.?});
+            return true;
+        }
         if (live and !options.force) {
             try out.print("nothing changed: what runs was made from {s}. `--force` to deploy it again\n", .{made_from.?});
             return true;
@@ -104,8 +114,9 @@ pub fn run(arena: Allocator, io: std.Io, environ: *const std.process.Environ.Map
         try out.writeAll("notice: --dirty: building this folder as it is, what git ignores included unless .dockerignore leaves it out\n");
     }
 
-    // Before anything slow, and nothing reaches the server if one is missing.
-    const resolved = try resolveSecrets(arena, io, environ, out, config, config.env.secret, options.secrets_path orelse config.secrets orelse secrets.DEFAULT_PATH) orelse return false;
+    // Before anything slow, and nothing reaches the server if one is missing. A
+    // version only staged has no container to give them to.
+    const resolved = if (options.stage) &.{} else try resolveSecrets(arena, io, environ, out, config, config.env.secret, options.secrets_path orelse config.secrets orelse secrets.DEFAULT_PATH) orelse return false;
 
     var build_folder: ?[]const u8 = null;
     if (clean) {
@@ -146,6 +157,7 @@ pub fn run(arena: Allocator, io: std.Io, environ: *const std.process.Environ.Map
         .secrets = resolved,
         .image = .{ .ptr = &sender, .sendFn = send.Sender.send },
         .migrate = options.migrate,
+        .stage = options.stage,
     }) catch |err| switch (err) {
         error.ConnectionFailed, error.TransportFailed => {
             try out.print("server {s}: {t}: {s}. See `cowshed lock status`\n", .{ config.host, err, ssh.connection_error });

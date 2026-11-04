@@ -190,6 +190,22 @@ with no backup: such an app should refuse in production, and leave migrating to 
   slow, and look at the data before trying again.
 - **Going back:** a rollback runs no migration, and the data stays as it is.
 
+## Trying a migration first
+
+A migration can run on a copy of the data before it runs on the real one: send the
+version without starting it, run its migration against the copy, then deploy it.
+
+```bash
+cowshed deploy --stage                      # Builds and sends it; nothing starts
+cowshed exec --version <v> --env DB_NAME=rehearsal --env MIGRATE=1 ./my-app
+cowshed deploy --migrate                    # The real one, with its backup; nothing to send
+```
+
+The copy is yours to make, with the database's own tools (`cowshed accessory exec`), and
+`--env` points the run at it. The run has the live version's secrets. A variable set
+with `--env` is seen on the server's command line, like the config's clear ones, so
+`--env` refuses a secret's name.
+
 ## Running one command
 
 `cowshed exec <command...>` starts a new container of the live version, with its variables,

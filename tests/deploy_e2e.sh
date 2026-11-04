@@ -415,4 +415,27 @@ inside docker network inspect e2e-own >/dev/null || fail "remove took the networ
 inside docker rm -f e2e-neighbour >/dev/null
 rm "$net_config"
 
+echo "== stage: sent and not started; exec tries it with a variable of its own; deploy sends nothing more"
+commit staged-base
+cowshed deploy > "$WORK/out" || { cat "$WORK/out"; fail "the deploy before staging failed"; }
+live=$(live_containers)
+commit staged
+staged=$(git -C "$APP" rev-parse --short HEAD)
+cowshed deploy --stage > "$WORK/out" || { cat "$WORK/out"; fail "the stage failed"; }
+grep -q "^staged $staged" "$WORK/out" || fail "it did not say it staged"
+[ "$(live_containers)" = "$live" ] || fail "staging changed what runs"
+[ "$(serving)" = staged-base ] || fail "staging changed what serves"
+cowshed exec --version "$staged" --env MODE=rehearsal sh -c 'cat /app/version.txt; printenv MODE; printenv TOKEN' > "$WORK/out"
+grep -qx staged "$WORK/out" || fail "exec did not run the staged version"
+grep -qx rehearsal "$WORK/out" || fail "the variable was not replaced"
+grep -qx hidden-token-value "$WORK/out" || fail "the staged run lost the live secrets"
+grep -q "^exec: MODE set for this run" "$WORK/out" || fail "it did not name the variable"
+if cowshed exec --env TOKEN=x printenv TOKEN > "$WORK/out"; then fail "a secret was replaced"; fi
+grep -q "is a secret" "$WORK/out" || fail "wrong reason: $(cat "$WORK/out")"
+if cowshed deploy --stage --migrate > "$WORK/out"; then fail "staged with a migration"; fi
+cowshed deploy > "$WORK/out" || { cat "$WORK/out"; fail "the deploy after staging failed"; }
+grep -q "image: 0 of" "$WORK/out" || fail "the staged image was sent again: $(grep '^image:' "$WORK/out")"
+[ "$(serving)" = staged ] || fail "not serving the staged version"
+cowshed remove --yes > /dev/null
+
 echo "e2e passed"

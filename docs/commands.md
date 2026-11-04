@@ -55,6 +55,10 @@ commits, it says so and stops.
   unless `.dockerignore` leaves them out.
 - `--force` deploys even if nothing changed.
 - `--migrate` runs the config's `backup` and `migrate`. Without it neither runs, and it says so.
+- `--stage` builds and sends the version, under the lock, and starts nothing: no container,
+  no migration, no switch. `exec --version` can then run it, and a later deploy puts it
+  live with nothing left to send. Not with `--migrate`. A deploy prunes a staged image
+  it leaves out of the versions it keeps.
 
 **`cowshed rollback <version>`** goes back to a version still on the server, with no
 build. If it fails its health it is stopped again, and what is live stays live.
@@ -68,10 +72,15 @@ server's time, and what it was made from.
 
 **`cowshed audit`** shows who deployed what and when.
 
-**`cowshed exec [--version <v>] <command...>`** runs a new container of a version, the
-live one's by default, with the live one's variables, network and volumes, and removes it
-after. The words replace the image's `CMD`.
+**`cowshed exec [--version <v>] [--env NAME=value]... <command...>`** runs a new container
+of a version, the live one's by default or one staged, with the live one's variables,
+network and volumes, and removes it after. The words replace the image's `CMD`.
 Its exit code decides the result. Its output comes when it ends.
+
+`--env` sets a variable for this run alone, over the config's and the env file's: a
+copy of the database to try a migration on, say. It is on the server's command line
+like the config's clear variables, so a secret is refused by name: secrets travel only
+by the env file. Only its name is said.
 
 ## Maintaining
 

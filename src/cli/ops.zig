@@ -18,7 +18,12 @@ pub const Action = union(enum) {
     rollback: []const u8,
     versions,
     logs: []const u8,
-    exec: struct { version: ?[]const u8, command: []const []const u8 },
+    exec: struct {
+        version: ?[]const u8,
+        /// The words of its `--env` options, `NAME=value` each.
+        env: []const []const u8 = &.{},
+        command: []const []const u8,
+    },
     audit,
     prune,
     stop,
@@ -68,13 +73,16 @@ pub fn parse(args: []const []const u8) Parsed {
         break :blk .{ .logs = rest[1] };
     } else if (eql(command, "exec")) blk: {
         var version: ?[]const u8 = null;
-        if (rest.len >= 2 and eql(rest[0], "--version")) {
-            version = rest[1];
+        // `--env` words are counted here, and taken from `args` in order by `envWords`.
+        var env_count: usize = 0;
+        while (rest.len >= 2 and (eql(rest[0], "--version") or eql(rest[0], "--env"))) {
+            if (eql(rest[0], "--version")) version = rest[1] else env_count += 1;
             rest = rest[2..];
         }
+        if (rest.len >= 1 and (eql(rest[0], "--version") or eql(rest[0], "--env"))) return .{ .invalid = rest[0] };
         if (rest.len >= 1 and eql(rest[0], "--")) rest = rest[1..];
         if (rest.len == 0) return .{ .invalid = command };
-        break :blk .{ .exec = .{ .version = version, .command = rest } };
+        break :blk .{ .exec = .{ .version = version, .env = if (env_count > 0) args[1 .. args.len - rest.len] else &.{}, .command = rest } };
     } else if (eql(command, "remove")) blk: {
         if (rest.len == 0) break :blk .{ .remove = false };
         if (rest.len != 1 or !eql(rest[0], "--yes")) return .{ .invalid = rest[0] };
@@ -112,12 +120,26 @@ fn dispatch(arena: Allocator, remote: Remote, out: *std.Io.Writer, config: Confi
         .rollback => |version| deploy.rollback(arena, remote, out, config, version, who),
         .versions => core.versions(arena, remote, out, config),
         .logs => |lines| core.logs(arena, remote, out, config, lines),
-        .exec => |exec| core.exec(arena, remote, out, config, exec.version, exec.command),
+        .exec => |exec| core.exec(arena, remote, out, config, exec.version, try envPairs(arena, exec.env), exec.command),
         .audit => core.audit(arena, remote, out, config),
         .prune => deploy.pruneNow(arena, remote, out, config, who),
         .stop => core.stop(arena, remote, out, config, who),
         .remove => |confirmed| core.remove(arena, remote, out, config, who, confirmed),
     };
+}
+
+/// From the words before an exec's command, the values of its `--env` options.
+fn envPairs(arena: Allocator, words: []const []const u8) Allocator.Error![]const Config.Pair {
+    var pairs: std.ArrayList(Config.Pair) = .empty;
+    var i: usize = 0;
+    while (i + 1 < words.len) : (i += 1) {
+        if (!eql(words[i], "--env")) continue;
+        const word = words[i + 1];
+        const equals = std.mem.indexOfScalar(u8, word, '=') orelse word.len;
+        try pairs.append(arena, .{ .name = word[0..equals], .value = if (equals < word.len) word[equals + 1 ..] else "" });
+        i += 1;
+    }
+    return pairs.items;
 }
 
 const testing = std.testing;
@@ -139,5 +161,16 @@ test "what is refused" {
     try testing.expectEqualStrings("x", parse(&.{ "logs", "--lines", "x" }).invalid);
     try testing.expectEqualStrings("--force", parse(&.{ "remove", "--force" }).invalid);
     try testing.expectEqualStrings("exec", parse(&.{"exec"}).invalid);
+    const exec = parse(&.{ "exec", "--env", "PG_DB=copy", "--version", "v2", "--env", "MIGRATE=1", "./app" }).options.action.exec;
+    try testing.expectEqualStrings("v2", exec.version.?);
+    try testing.expectEqualStrings("./app", exec.command[0]);
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const pairs = try envPairs(arena.allocator(), exec.env);
+    try testing.expectEqual(2, pairs.len);
+    try testing.expectEqualStrings("PG_DB", pairs[0].name);
+    try testing.expectEqualStrings("copy", pairs[0].value);
+    try testing.expectEqualStrings("MIGRATE", pairs[1].name);
+    try testing.expectEqualStrings("--env", parse(&.{ "exec", "--env" }).invalid);
     try testing.expectEqualStrings("more", parse(&.{ "versions", "more" }).invalid);
 }

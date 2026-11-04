@@ -9,6 +9,7 @@ const detect = @import("../proxy/detect.zig");
 const route = @import("../proxy/route.zig");
 const lock = @import("lock.zig");
 const deploy = @import("deploy.zig");
+const secrets = @import("../config/secrets.zig");
 const Allocator = std.mem.Allocator;
 const Writer = std.Io.Writer;
 
@@ -101,7 +102,21 @@ pub fn audit(arena: Allocator, remote: Remote, out: *Writer, config: Config) Err
 
 /// A new container of `version` (the live one's by default), with the live one's
 /// variables and network, removed when it ends. Its exit code decides the result.
-pub fn exec(arena: Allocator, remote: Remote, out: *Writer, config: Config, version: ?[]const u8, command: []const []const u8) Error!bool {
+/// `env` replaces variables for this run alone; a secret is not one of them, as it
+/// travels only by the env file, and only names are said.
+pub fn exec(arena: Allocator, remote: Remote, out: *Writer, config: Config, version: ?[]const u8, env: []const Config.Pair, command: []const []const u8) Error!bool {
+    for (env) |pair| {
+        if (!isVariableName(pair.name)) {
+            try out.print("stopped: `--env {s}` is no variable's name: letters, digits and `_`, not starting with a digit\n", .{pair.name});
+            return false;
+        }
+        for (config.env.secret) |entry| {
+            if (std.mem.eql(u8, secrets.targetOf(entry), pair.name)) {
+                try out.print("stopped: `{s}` is a secret: it travels only by the env file, never on a command line\n", .{pair.name});
+                return false;
+            }
+        }
+    }
     const rows = try list(arena, remote, out, config) orelse return false;
     const live = liveOf(rows);
     const chosen = version orelse if (live) |row| row.version else {
@@ -120,8 +135,8 @@ pub fn exec(arena: Allocator, remote: Remote, out: *Writer, config: Config, vers
         }
     }
     try docker.appendNetworks(arena, &argv, try deploy.networksOf(arena, config, traefik));
-    for (config.env.clear) |env| {
-        try argv.appendSlice(arena, &.{ "--env", try std.fmt.allocPrint(arena, "{s}={s}", .{ env.name, env.value }) });
+    for (config.env.clear) |clear| {
+        try argv.appendSlice(arena, &.{ "--env", try std.fmt.allocPrint(arena, "{s}={s}", .{ clear.name, clear.value }) });
     }
     if (live) |row| {
         const env_file = try remote.run(arena, .{ .argv = &.{ "sh", "-c", ENV_FILE_IF_ANY, "sh", row.name } });
@@ -129,11 +144,16 @@ pub fn exec(arena: Allocator, remote: Remote, out: *Writer, config: Config, vers
     } else if (config.env.secret.len > 0) {
         try out.writeAll("notice: nothing is live, so this runs without the app's secrets\n");
     }
+    // After the env file: an `--env` wins over it.
+    for (env) |pair| {
+        try argv.appendSlice(arena, &.{ "--env", try std.fmt.allocPrint(arena, "{s}={s}", .{ pair.name, pair.value }) });
+    }
     try docker.appendVolumes(arena, &argv, config.volumes);
     try argv.append(arena, image);
     try argv.appendSlice(arena, command);
 
     try out.print("exec: running in a new container of {s}; its output comes at the end\n", .{chosen});
+    for (env) |pair| try out.print("exec: {s} set for this run\n", .{pair.name});
     const result = try remote.run(arena, .{ .argv = argv.items });
     try out.writeAll(result.stdout);
     try out.writeAll(result.stderr);
@@ -218,6 +238,14 @@ fn removeRoute(arena: Allocator, remote: Remote, out: *Writer, config: Config) E
     }
 }
 
+fn isVariableName(name: []const u8) bool {
+    if (name.len == 0 or std.ascii.isDigit(name[0])) return false;
+    for (name) |c| {
+        if (!std.ascii.isAlphanumeric(c) and c != '_') return false;
+    }
+    return true;
+}
+
 const testing = std.testing;
 const Fake = @import("../remote/Fake.zig");
 
@@ -281,11 +309,11 @@ test "exec: the live version, its env file, its words whole, its exit code" {
     config.env = .{ .clear = &.{.{ .name = "A", .value = "1" }} };
     config.volumes = &.{"/srv/d:/data"};
     const a = h.arena.allocator();
-    try testing.expect(try exec(a, h.fake.remote(), &h.output.writer, config, null, &.{ "./migrate", "--to", "two words" }));
+    try testing.expect(try exec(a, h.fake.remote(), &h.output.writer, config, null, &.{}, &.{ "./migrate", "--to", "two words" }));
     try testing.expect(h.fake.ran("docker run --rm"));
     try testing.expect(h.fake.ran("--env A=1 --env-file /home/u/.cowshed/env/app-web-v2 --volume /srv/d:/data app:v2 ./migrate --to two words"));
     try h.on("docker run --rm", 3, "");
-    try testing.expect(!try exec(a, h.fake.remote(), &h.output.writer, config, "v1", &.{"x"}));
+    try testing.expect(!try exec(a, h.fake.remote(), &h.output.writer, config, "v1", &.{}, &.{"x"}));
     try testing.expect(h.fake.ran("app:v1 x"));
     try h.says("exit code 3");
 }
@@ -296,9 +324,30 @@ test "exec joins the project's networks too" {
     try h.begin();
     var config = CONFIG;
     config.networks = &.{"own"};
-    try testing.expect(try exec(h.arena.allocator(), h.fake.remote(), &h.output.writer, config, null, &.{"x"}));
+    try testing.expect(try exec(h.arena.allocator(), h.fake.remote(), &h.output.writer, config, null, &.{}, &.{"x"}));
     const line = h.fake.calls.items[h.fake.position("docker run --rm").?].line;
     try testing.expect(std.mem.indexOf(u8, line, "--network own") != null);
+}
+
+test "exec --env: after the env file so it wins, only its name said; a secret or a bad name refused" {
+    var h = harness();
+    defer h.arena.deinit();
+    try h.begin();
+    try h.on("$HOME/.cowshed/env/$1", 0, "/home/u/.cowshed/env/app-web-v2");
+    var config = CONFIG;
+    config.env = .{ .clear = &.{.{ .name = "PG_DB", .value = "live" }}, .secret = &.{ "PG_PASSWORD", "TOKEN:FROM_FILE" } };
+    const a = h.arena.allocator();
+    try testing.expect(try exec(a, h.fake.remote(), &h.output.writer, config, "v3", &.{.{ .name = "PG_DB", .value = "rehearsal" }}, &.{"./app"}));
+    try testing.expect(h.fake.ran("--env PG_DB=live --env-file /home/u/.cowshed/env/app-web-v2 --env PG_DB=rehearsal app:v3 ./app"));
+    try h.says("exec: PG_DB set for this run");
+    try testing.expect(std.mem.indexOf(u8, h.output.written(), "rehearsal") == null);
+    const runs = h.fake.calls.items.len;
+    try testing.expect(!try exec(a, h.fake.remote(), &h.output.writer, config, null, &.{.{ .name = "PG_PASSWORD", .value = "x" }}, &.{"./app"}));
+    try h.says("`PG_PASSWORD` is a secret");
+    try testing.expect(!try exec(a, h.fake.remote(), &h.output.writer, config, null, &.{.{ .name = "TOKEN", .value = "x" }}, &.{"./app"}));
+    try testing.expect(!try exec(a, h.fake.remote(), &h.output.writer, config, null, &.{.{ .name = "1BAD", .value = "x" }}, &.{"./app"}));
+    try h.says("no variable's name");
+    try testing.expectEqual(runs, h.fake.calls.items.len);
 }
 
 test "exec with nothing live needs a version" {
@@ -306,7 +355,7 @@ test "exec with nothing live needs a version" {
     defer h.arena.deinit();
     try h.begin();
     try h.on("docker ps -a", 0, "app-web-v1\texited\tv1\n");
-    try testing.expect(!try exec(h.arena.allocator(), h.fake.remote(), &h.output.writer, CONFIG, null, &.{"x"}));
+    try testing.expect(!try exec(h.arena.allocator(), h.fake.remote(), &h.output.writer, CONFIG, null, &.{}, &.{"x"}));
     try h.says("nothing is live");
 }
 

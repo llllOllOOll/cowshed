@@ -38,6 +38,9 @@ pub const Input = struct {
     image: ImageSender,
     /// Asked for by name: runs the config's backup and migration before the new version.
     migrate: bool = false,
+    /// Only builds and sends the version: no container, nothing switched. Then
+    /// `exec --version` can run it, and a deploy puts it live with nothing to send.
+    stage: bool = false,
 };
 
 pub const Error = Remote.Error || Writer.Error || error{ImageFailed};
@@ -176,9 +179,10 @@ pub fn run(arena: Allocator, remote: Remote, out: *Writer, input: Input) Error!b
     }
     defer releaseLock(self);
 
-    try self.audit(if (input.sources) |sources| try std.fmt.allocPrint(arena, "deploy started, from {s}", .{sources}) else "deploy started");
+    const what = if (input.stage) "stage" else "deploy";
+    try self.audit(if (input.sources) |sources| try std.fmt.allocPrint(arena, "{s} started, from {s}", .{ what, sources }) else try std.fmt.allocPrint(arena, "{s} started", .{what}));
     const done = try deployLocked(self, traefik);
-    try self.audit(if (done) "deployed" else "deploy failed");
+    try self.audit(if (input.stage) (if (done) "staged" else "stage failed") else if (done) "deployed" else "deploy failed");
     return done;
 }
 
@@ -226,6 +230,11 @@ fn deployLocked(self: Run, traefik: ?detect.Traefik) Error!bool {
         else => return self.stop("sending the image: {t}", .{err}),
     };
     if (!sent) return false;
+    if (self.input.stage) {
+        // Not pruned until a deploy leaves it out of the versions it keeps.
+        try self.say("staged {s}: nothing runs it. `cowshed exec --version {s} <command...>` tries it; `cowshed deploy` puts it live", .{ version, version });
+        return true;
+    }
     if (!try ensureNetworks(self)) return false;
 
     const containers = try self.ask(try docker.listAll(self.arena, config.service));
@@ -683,6 +692,7 @@ const Sender = struct {
 
 const Harness = struct {
     migrating: bool = false,
+    staging: bool = false,
     arena: std.heap.ArenaAllocator,
     fake: Fake = undefined,
     output: Writer.Allocating = undefined,
@@ -718,6 +728,7 @@ const Harness = struct {
             .secrets = &.{.{ .name = "TOKEN", .value = "hidden-value" }},
             .image = .{ .ptr = &self.sender, .sendFn = Sender.send },
             .migrate = self.migrating,
+            .stage = self.staging,
         });
     }
 
@@ -1170,6 +1181,21 @@ test "raw TCP with no entrypoint on its port: stopped before anything starts, Tr
     try h.says("`proxy.tcp` 60005, and Traefik `traefik` has no entrypoint on it");
     try testing.expect(!h.fake.ran("docker run"));
     try testing.expect(!h.fake.ran("cat > \"$1/.$2.tmp\""));
+}
+
+test "stage: the image sent, under the lock, and nothing started, written or switched" {
+    var h = harness();
+    defer h.arena.deinit();
+    try h.begin();
+    h.staging = true;
+    try testing.expect(try h.deploy(PROXIED));
+    try testing.expect(h.sender.sent);
+    try h.before("mkdir \"$d\"", "stage started");
+    for ([_][]const u8{ "docker run", "umask 077", "cat > \"$1/.$2.tmp\"", "docker stop", "docker rmi", "network create" }) |change| {
+        try testing.expect(!h.fake.ran(change));
+    }
+    try testing.expect(h.fake.ran("staged"));
+    try h.says("staged v2: nothing runs it. `cowshed exec --version v2");
 }
 
 test "a container that cannot be stopped is told, the deploy is done" {

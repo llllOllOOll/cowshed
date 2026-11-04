@@ -37,6 +37,7 @@ pub const USAGE =
     \\    --dirty                Ship this folder as it is, as a test
     \\    --force                Deploy even if nothing changed
     \\    --migrate              Run the config's backup and migration before the new version
+    \\    --stage                Only build and send it: nothing starts; `exec --version` tries it
     \\  lock <status|release>   The deploy lock, for after an interrupted deploy
     \\    -c, --config <path>    Another config file
     \\  rollback <version>      Back to a version still on the server: no build
@@ -160,6 +161,8 @@ fn parseDeploy(args: []const []const u8) Parsed {
             options.force = true;
         } else if (eql(arg, "--migrate")) {
             options.migrate = true;
+        } else if (eql(arg, "--stage")) {
+            options.stage = true;
         } else if (eql(arg, "-c") or eql(arg, "--config")) {
             i += 1;
             if (i == args.len) return .{ .invalid = arg };
