@@ -269,6 +269,7 @@ hooks, and `drain_timeout`. The rest belongs to the engine and the game:
 A server where another proxy holds 80 and 443 has to give them to Traefik first: a
 short cut for **every app on that server**, and certificates issued again. Plan a
 window, test that `acme.json` persists, and move an app at a time with `replaces`.
+`deploy --stage` sends the image before the window, as it needs no Traefik yet.
 Long-lived containers keep running as they are.
 
 ## Spikes

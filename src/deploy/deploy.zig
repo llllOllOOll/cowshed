@@ -159,7 +159,9 @@ pub fn run(arena: Allocator, remote: Remote, out: *Writer, input: Input) Error!b
 
     try self.say("deploy: {s} {s} to {s}", .{ service, input.version, input.config.host });
     var traefik: ?detect.Traefik = null;
-    if (input.config.proxy) |proxy| {
+    // A stage routes nothing: it goes before Traefik is there, as when another
+    // proxy still holds the ports and the move has its window later.
+    if (input.config.proxy) |proxy| if (!input.stage) {
         try self.say("proxy: reading the server's Traefik", .{});
         switch (try detect.detect(arena, remote, proxy)) {
             .stopped => |message| return self.stop("{s}", .{message}),
@@ -169,7 +171,7 @@ pub fn run(arena: Allocator, remote: Remote, out: *Writer, input: Input) Error!b
                 try self.say("proxy: using `{s}`, network {s}", .{ found.name, found.network });
             },
         }
-    }
+    };
 
     try self.say("lock: taking it", .{});
     const details = try std.fmt.allocPrint(arena, "{s}, version {s}", .{ input.who, input.version });
@@ -1240,6 +1242,21 @@ test "stage: the image sent, under the lock, and nothing started, written or swi
     }
     try testing.expect(h.fake.ran("staged"));
     try h.says("staged v2: nothing runs it. `cowshed exec --version v2");
+}
+
+test "stage: with no Traefik yet, as when another proxy holds the ports, the image goes" {
+    var h = harness();
+    defer h.arena.deinit();
+    try h.begin();
+    h.staging = true;
+    try h.on("docker ps --format", 0, "k1\tbasecamp/kamal-proxy:v0.9.0\tkamal-proxy\t0.0.0.0:80->80/tcp, 0.0.0.0:443->443/tcp\tkamal\n");
+    try testing.expect(try h.deploy(PROXIED));
+    try testing.expect(h.sender.sent);
+    try testing.expect(!h.fake.ran("docker ps --format"));
+    try testing.expect(!h.fake.ran("docker run"));
+    h.staging = false;
+    try testing.expect(!try h.deploy(PROXIED));
+    try h.says("no Traefik runs on this server");
 }
 
 test "a container that cannot be stopped is told, the deploy is done" {

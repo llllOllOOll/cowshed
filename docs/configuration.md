@@ -148,7 +148,8 @@ Their secrets come from the same secrets file, into an env file of their own; th
 `files` are sent from this machine and mounted read-only; their `directories` are
 folders on the server, in `~/.cowshed/accessories/<service>-accessory-<name>/directories/`, which
 `cowshed accessory remove` keeps. They join the project's `networks` unless they name
-their own, so the app reaches them by name and other apps do not.
+their own, so the app reaches them by name and other apps do not. One with no `proxy` and
+no network to join is refused: on Docker's `bridge` the app could not reach it by name.
 
 With `proxy`, an accessory also joins Traefik's network, must answer 2xx on its health
 path within `boot_timeout`, asked from inside Traefik, and then gets a route to its

@@ -475,6 +475,11 @@ const Reader = struct {
                 for (accessories.value.map) |entry| {
                     const accessory = try self.readAccessory(entry);
                     try self.checkAccessory(entry, accessory, config.host);
+                    // With no route and no network, it lands on Docker's `bridge`,
+                    // where the app cannot reach it by name.
+                    if (accessory.proxy == null and (accessory.networks orelse config.networks).len == 0) {
+                        try self.problem(entry.line, "`accessories.{s}` shares no network with the app, so the app cannot reach it by name: list one under `networks`, the project's, and it joins it", .{accessory.name});
+                    }
                     try out.append(self.arena, accessory);
                 }
                 config.accessories = out.items;
@@ -835,6 +840,19 @@ test "an accessory" {
     try testing.expectEqualStrings("POSTGRES_PASSWORD", db.env.secret[0]);
     try testing.expectEqualStrings("db.example", db.proxy.?.host);
     try testing.expect(db.networks == null);
+}
+
+test "an accessory the app cannot reach is refused; one on the project's network is not" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var problems: std.ArrayList(Problem) = .empty;
+    const refused = "`accessories.db` shares no network with the app, so the app cannot reach it by name: list one under `networks`, the project's, and it joins it";
+    const db = "accessories:\n  db:\n    image: postgres\n";
+    try expectProblem(MINIMAL ++ db, refused);
+    const joined = try parse(arena.allocator(), MINIMAL ++ "networks:\n  - app\n" ++ db, &problems);
+    try testing.expect(joined.accessories[0].networks == null);
+    _ = try parse(arena.allocator(), MINIMAL ++ db ++ "    networks:\n      - own\n", &problems);
+    _ = try parse(arena.allocator(), MINIMAL ++ db ++ "    proxy:\n      host: db.example\n", &problems);
 }
 
 test "raw TCP ports" {

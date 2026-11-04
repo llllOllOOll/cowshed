@@ -58,7 +58,8 @@ commits, it says so and stops.
 - `--stage` builds and sends the version, under the lock, and starts nothing: no container,
   no migration, no switch. `exec --version` can then run it, and a later deploy puts it
   live with nothing left to send. Not with `--migrate`. A deploy prunes a staged image
-  it leaves out of the versions it keeps.
+  it leaves out of the versions it keeps. It needs no Traefik yet: on a server another
+  proxy still holds, the image goes before the window that moves it.
 
 **`cowshed rollback <version>`** goes back to a version still on the server, with no
 build. If it fails its health it is stopped again, and what is live stays live.
