@@ -60,6 +60,21 @@ memory: 1g
 deploy_timeout: 30        # Seconds for the new version to prove healthy
 drain_timeout: 30         # Seconds for the old one's connections to end
 replaces: old-container   # Optional: from before Cowshed; stopped, never removed
+accessories:              # Optional: long-lived containers beside the app
+  db:                     # Runs as `<service>-db`
+    image: postgres:17-alpine
+    port: 127.0.0.1:5432:5432  # Optional: `--publish`
+    cmd: postgres -c max_connections=200  # Optional
+    env:                  # As the app's: clear and secret
+      secret:
+        - POSTGRES_PASSWORD
+    files:                # Optional: from this folder, mounted read-only
+      - config/db/init.sql:/docker-entrypoint-initdb.d/init.sql
+    directories:          # Optional: a folder of its own on the server
+      - data:/var/lib/postgresql/data
+    volumes: []           # Optional: as the app's
+    networks:             # Optional: the project's `networks` when left out
+      - my-app
 ```
 
 A list of hosts can stand directly under `servers`, and a plain map under `env` is all
@@ -96,6 +111,18 @@ never runs without its database. A network missing is made by `deploy`; one that
 used as it is, whoever made it. `remove` leaves them: something else may be on one. Docker
 25 or later joins several networks at once. `host`, `none` and `bridge` are Docker's own and
 refused: a container on them can join no other.
+
+## Accessories
+
+A database, an identity server: containers that live across deploys, named
+`<service>-<name>` on the app's server (`host`, if given, must be the app's).
+`cowshed accessory boot` starts one that does not exist; a deploy never touches them.
+Their secrets come from the same secrets file, into an env file of their own; their
+`files` are sent from this machine and mounted read-only; their `directories` are
+folders on the server, in `~/.cowshed/accessories/<service>-<name>/directories/`, which
+`cowshed accessory remove` keeps. They join the project's `networks` unless they name
+their own, so the app reaches them by name and other apps do not. `proxy` is read and
+not used yet.
 
 ## Backups
 

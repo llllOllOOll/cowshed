@@ -95,6 +95,44 @@ pub fn runApp(arena: Allocator, app: AppContainer) Allocator.Error![]const []con
     return argv.items;
 }
 
+pub const AccessoryContainer = struct {
+    name: []const u8,
+    image: []const u8,
+    /// The app's service: a label of its own, never `service`, so nothing done to
+    /// the app's versions (listing, pruning, removing) reaches it.
+    service: []const u8,
+    accessory: []const u8,
+    networks: []const []const u8 = &.{},
+    publish: ?[]const u8 = null,
+    env_file: ?[]const u8 = null,
+    clear_env: []const Pair = &.{},
+    /// Ready for `--volume`: its folders, its files (read-only) and its volumes.
+    volumes: []const []const u8 = &.{},
+    cmd: ?[]const u8 = null,
+};
+
+pub fn runAccessory(arena: Allocator, accessory: AccessoryContainer) Allocator.Error![]const []const u8 {
+    var argv: std.ArrayList([]const u8) = .empty;
+    try argv.appendSlice(arena, &.{
+        "docker",  "run",                                                                "-d",      "--name",                                                                    accessory.name, "--restart", "unless-stopped",
+        "--label", try std.fmt.allocPrint(arena, "accessory={s}", .{accessory.service}), "--label", try std.fmt.allocPrint(arena, "accessory.name={s}", .{accessory.accessory}),
+    });
+    try appendNetworks(arena, &argv, accessory.networks);
+    if (accessory.publish) |publish| {
+        // `5432` alone is the same port on both sides.
+        const both = if (std.mem.indexOfScalar(u8, publish, ':') == null) try std.fmt.allocPrint(arena, "{s}:{s}", .{ publish, publish }) else publish;
+        try argv.appendSlice(arena, &.{ "--publish", both });
+    }
+    for (accessory.clear_env) |env| {
+        try argv.appendSlice(arena, &.{ "--env", try std.fmt.allocPrint(arena, "{s}={s}", .{ env.name, env.value }) });
+    }
+    if (accessory.env_file) |path| try argv.appendSlice(arena, &.{ "--env-file", path });
+    try appendVolumes(arena, &argv, accessory.volumes);
+    try argv.append(arena, accessory.image);
+    if (accessory.cmd) |cmd| try appendWords(arena, &argv, cmd);
+    return argv.items;
+}
+
 pub const Migration = struct {
     name: []const u8,
     image: []const u8,
@@ -219,6 +257,31 @@ test "a container's command: labels, limits, env, and its words whole" {
     try testing.expect(std.mem.indexOf(u8, line, "--label|version=1") != null);
     try testing.expect(std.mem.indexOf(u8, line, "--env|A=b c|--env-file|/e|--volume|/srv/a b:/data|--volume|n:/m:ro|s:1|--nearest|24|--name|two words|--empty|") != null);
     try testing.expectEqualStrings("", argv[argv.len - 1]);
+}
+
+test "an accessory's command: its own labels, no service label, a port on both sides" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const argv = try runAccessory(a, .{
+        .name = "s-db",
+        .image = "postgres:17",
+        .service = "s",
+        .accessory = "db",
+        .networks = &.{"own"},
+        .publish = "5432",
+        .env_file = "/e",
+        .clear_env = &.{.{ .name = "PGDATA", .value = "/d" }},
+        .volumes = &.{"/home/u/.cowshed/accessories/s-db/directories/data:/var/lib/postgresql/data"},
+        .cmd = "postgres -c \"max_connections=200\"",
+    });
+    const line = try std.mem.join(a, "|", argv);
+    try testing.expect(std.mem.indexOf(u8, line, "--name|s-db|--restart|unless-stopped|--label|accessory=s|--label|accessory.name=db|--network|own|--publish|5432:5432") != null);
+    try testing.expect(std.mem.indexOf(u8, line, "service=") == null);
+    try testing.expect(std.mem.indexOf(u8, line, "--env|PGDATA=/d|--env-file|/e|--volume|") != null);
+    try testing.expect(std.mem.endsWith(u8, line, "|postgres:17|postgres|-c|max_connections=200"));
+    const published = try runAccessory(a, .{ .name = "n", .image = "i", .service = "s", .accessory = "a", .publish = "127.0.0.1:1:2" });
+    try testing.expect(std.mem.indexOf(u8, try std.mem.join(a, "|", published), "--publish|127.0.0.1:1:2|") != null);
 }
 
 test "a container's environment is never asked for" {

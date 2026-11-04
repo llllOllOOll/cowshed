@@ -77,16 +77,24 @@ pub const Migrate = struct {
     timeout_s: u32 = DEFAULT_MIGRATE_TIMEOUT_S,
 };
 
+/// A long-lived container beside the app, such as its database: `<service>-<name>`
+/// on the app's server, started once and left running across deploys.
 pub const Accessory = struct {
     name: []const u8,
     image: []const u8,
-    host: []const u8,
+    /// The app's, for now: one server.
+    host: ?[]const u8 = null,
+    /// `--publish`: `5432` or `127.0.0.1:5432:5432`.
     port: ?[]const u8 = null,
     cmd: ?[]const u8 = null,
     env: Env = .{},
+    /// `local/path:/in/container`, sent from this machine and mounted read-only.
     files: []const []const u8 = &.{},
+    /// `name:/in/container`: a folder of its own on the server, kept by `remove`.
     directories: []const []const u8 = &.{},
     volumes: []const []const u8 = &.{},
+    /// Its networks; the project's `networks` when not set.
+    networks: ?[]const []const u8 = null,
     proxy: ?Proxy = null,
 };
 
@@ -309,19 +317,49 @@ const Reader = struct {
     fn readAccessory(self: *Reader, entry: yaml.Entry) Allocator.Error!Accessory {
         const value = entry.value;
         const path = try std.fmt.allocPrint(self.arena, "accessories.{s}", .{entry.key});
-        try self.checkKeys(value, entry.line, path, &.{ "image", "host", "port", "cmd", "env", "files", "directories", "volumes", "proxy" });
+        try self.checkKeys(value, entry.line, path, &.{ "image", "host", "port", "cmd", "env", "files", "directories", "volumes", "networks", "proxy" });
+        if (!isSafeName(entry.key)) {
+            try self.problem(entry.line, "an accessory's name may have only letters, digits, `-`, `_` and `.`: `{s}`", .{entry.key});
+        }
         return .{
             .name = entry.key,
             .image = try self.required(value, "image", path, entry.line),
-            .host = try self.required(value, "host", path, entry.line),
+            .host = try self.string(value, "host", path),
             .port = try self.string(value, "port", path),
             .cmd = try self.string(value, "cmd", path),
             .env = try self.readEnv(value, try std.fmt.allocPrint(self.arena, "{s}.", .{path})),
             .files = try self.strings(value, "files", path),
             .directories = try self.strings(value, "directories", path),
             .volumes = try self.strings(value, "volumes", path),
+            .networks = if (value.get("networks") != null) try self.strings(value, "networks", path) else null,
             .proxy = try self.readProxy(value, try std.fmt.allocPrint(self.arena, "{s}.", .{path})),
         };
+    }
+
+    fn checkAccessory(self: *Reader, entry: yaml.Entry, accessory: Accessory, app_host: []const u8) Allocator.Error!void {
+        const value = entry.value;
+        if (accessory.host) |host| {
+            if (app_host.len > 0 and !std.mem.eql(u8, host, app_host)) {
+                try self.problem(value.get("host").?.line, "one server for now: `accessories.{s}.host` must be the app's, `{s}`, or left out", .{ accessory.name, app_host });
+            }
+        }
+        if (accessory.port) |port| {
+            if (!isPort(port)) try self.problem(value.get("port").?.line, "`accessories.{s}.port` is `5432` or `127.0.0.1:5432:5432`: `{s}`", .{ accessory.name, port });
+        }
+        try self.checkEach(value, "files", accessory.files, isFile, "a file is `local/path:/in/container`");
+        try self.checkEach(value, "directories", accessory.directories, isDirectory, "a directory is `name:/in/container`, its name letters, digits, `-`, `_` and `.`");
+        try self.checkEach(value, "volumes", accessory.volumes, isVolume, "a volume is `/on/server:/in/container` or `name:/in/container`, with `:ro`, `:rw`, `:z` or `:Z` after");
+        if (accessory.networks) |networks| {
+            try self.checkEach(value, "networks", networks, isJoinableNetwork, "a network's name is letters, digits, `_`, `.` and `-`, and not Docker's own `host`, `none` or `bridge`");
+        }
+    }
+
+    fn checkEach(self: *Reader, value: yaml.Value, key: []const u8, items: []const []const u8, comptime valid: fn ([]const u8) bool, comptime what: []const u8) Allocator.Error!void {
+        const entry = value.get(key) orelse return;
+        if (entry.value != .list) return;
+        for (entry.value.list, 0..) |item, i| {
+            if (i < items.len and !valid(items[i])) try self.problem(item.line, what ++ ": `{s}`", .{items[i]});
+        }
     }
 
     fn read(self: *Reader, root: yaml.Value) Allocator.Error!Config {
@@ -398,7 +436,11 @@ const Reader = struct {
         if (root.get("accessories")) |accessories| {
             if (accessories.value == .map) {
                 var out: std.ArrayList(Accessory) = .empty;
-                for (accessories.value.map) |entry| try out.append(self.arena, try self.readAccessory(entry));
+                for (accessories.value.map) |entry| {
+                    const accessory = try self.readAccessory(entry);
+                    try self.checkAccessory(entry, accessory, config.host);
+                    try out.append(self.arena, accessory);
+                }
                 config.accessories = out.items;
             } else if (accessories.value != .none) {
                 try self.problem(accessories.line, "`accessories` must be a map", .{});
@@ -512,6 +554,38 @@ fn isNetworkName(name: []const u8) bool {
         if (!(std.ascii.isAlphanumeric(c) or c == '_' or c == '.' or c == '-')) return false;
     }
     return true;
+}
+
+fn isJoinableNetwork(name: []const u8) bool {
+    return isNetworkName(name) and !isDockerOwnNetwork(name);
+}
+
+/// `5432`, `5432:5432` or `127.0.0.1:5432:5432`.
+fn isPort(text: []const u8) bool {
+    var parts = std.mem.splitScalar(u8, text, ':');
+    var count: usize = 0;
+    var last: []const u8 = "";
+    while (parts.next()) |part| : (count += 1) {
+        if (part.len == 0) return false;
+        last = part;
+    }
+    if (count > 3) return false;
+    _ = std.fmt.parseInt(u16, last, 10) catch return false;
+    return true;
+}
+
+fn isFile(text: []const u8) bool {
+    const colon = std.mem.lastIndexOfScalar(u8, text, ':') orelse return false;
+    const local = text[0..colon];
+    const inside = text[colon + 1 ..];
+    return local.len > 0 and inside.len > 1 and inside[0] == '/';
+}
+
+fn isDirectory(text: []const u8) bool {
+    const colon = std.mem.indexOfScalar(u8, text, ':') orelse return false;
+    const inside = text[colon + 1 ..];
+    return isSafeName(text[0..colon]) and !std.mem.eql(u8, text[0..colon], ".") and !std.mem.eql(u8, text[0..colon], "..") and
+        inside.len > 1 and inside[0] == '/' and std.mem.indexOfScalar(u8, inside, ':') == null;
 }
 
 /// A container on one of these cannot join another network as well.
@@ -701,6 +775,35 @@ test "an accessory" {
     try testing.expectEqualStrings("db", db.name);
     try testing.expectEqualStrings("POSTGRES_PASSWORD", db.env.secret[0]);
     try testing.expectEqualStrings("db.example", db.proxy.?.host);
+    try testing.expect(db.networks == null);
+}
+
+test "an accessory's host is the app's or none, and its lists are checked" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var problems: std.ArrayList(Problem) = .empty;
+    const config = try parse(arena.allocator(), MINIMAL ++
+        \\accessories:
+        \\  db:
+        \\    image: postgres
+        \\    port: "5432"
+        \\    files:
+        \\      - config/db/init.sql:/docker-entrypoint-initdb.d/init.sql
+        \\    networks:
+        \\      - own
+    , &problems);
+    try testing.expect(config.accessories[0].host == null);
+    try testing.expectEqualStrings("own", config.accessories[0].networks.?[0]);
+    const base = MINIMAL ++ "accessories:\n  db:\n    image: a\n";
+    const DIRECTORY_IS = "a directory is `name:/in/container`, its name letters, digits, `-`, `_` and `.`: ";
+    try expectProblem(base ++ "    host: elsewhere\n", "one server for now: `accessories.db.host` must be the app's, `h`, or left out");
+    try expectProblem(base ++ "    port: \"1.2.3.4:x\"\n", "`accessories.db.port` is `5432` or `127.0.0.1:5432:5432`: `1.2.3.4:x`");
+    try expectProblem(base ++ "    files:\n      - init.sql\n", "a file is `local/path:/in/container`: `init.sql`");
+    try expectProblem(base ++ "    files:\n      - \"init.sql:relative\"\n", "a file is `local/path:/in/container`: `init.sql:relative`");
+    try expectProblem(base ++ "    directories:\n      - \"../up:/data\"\n", DIRECTORY_IS ++ "`../up:/data`");
+    try expectProblem(base ++ "    directories:\n      - \"/abs:/data\"\n", DIRECTORY_IS ++ "`/abs:/data`");
+    try expectProblem(base ++ "    networks:\n      - host\n", "a network's name is letters, digits, `_`, `.` and `-`, and not Docker's own `host`, `none` or `bridge`: `host`");
+    try expectProblem(MINIMAL ++ "accessories:\n  \"d b\":\n    image: a\n", "an accessory's name may have only letters, digits, `-`, `_` and `.`: `d b`");
 }
 
 test "an unknown option is refused by its whole name" {

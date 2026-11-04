@@ -8,6 +8,7 @@ const deploy = @import("deploy.zig");
 const lock = @import("lock.zig");
 const proxy = @import("proxy.zig");
 const ops = @import("ops.zig");
+const accessory = @import("accessory.zig");
 const Allocator = std.mem.Allocator;
 
 pub const VERSION = "0.0.1";
@@ -48,6 +49,13 @@ pub const USAGE =
     \\  stop                    Take the app off the air; its containers stay
     \\  remove --yes            Remove the app from the server, for good
     \\    (each with -c, --config <path> before its other words)
+    \\  accessory <action> <name>  A long-lived container beside the app, such as its database
+    \\    boot <name|all>        Start it if it does not exist: folders, secrets, files
+    \\    start | stop <name|all>   Start or stop it; it stays, with what it holds
+    \\    logs <name> [--lines <n>]  Its latest logs
+    \\    exec <name> <command...>   A command in it, while it runs
+    \\    remove <name> --yes    The container and its files; its directories stay
+    \\    (-c, --config <path> and --secrets <path> right after `accessory`)
     \\  version    Show the version
     \\  help       Show this help
     \\
@@ -63,6 +71,7 @@ pub const Parsed = union(enum) {
     lock: lock.Options,
     proxy: proxy.Options,
     ops: ops.Options,
+    accessory: accessory.Options,
     /// What was not understood.
     invalid: []const u8,
 };
@@ -77,6 +86,10 @@ pub fn parse(args: []const []const u8) Parsed {
     if (eql(command, "deploy")) return parseDeploy(args[1..]);
     if (eql(command, "lock")) return parseLock(args[1..]);
     if (eql(command, "proxy")) return parseProxy(args[1..]);
+    if (eql(command, "accessory")) return switch (accessory.parse(args)) {
+        .options => |options| .{ .accessory = options },
+        .invalid => |what| .{ .invalid = what },
+    };
     if (ops.isCommand(command)) return switch (ops.parse(args)) {
         .options => |options| .{ .ops = options },
         .invalid => |what| .{ .invalid = what },
@@ -218,6 +231,9 @@ pub fn run(arena: Allocator, io: std.Io, environ: *const std.process.Environ.Map
         },
         .proxy => |options| {
             if (!try proxy.run(arena, io, environ, out, options)) return 1;
+        },
+        .accessory => |options| {
+            if (!try accessory.run(arena, io, environ, out, options)) return 1;
         },
         .lock => |options| {
             if (!try lock.run(arena, io, out, options)) return 1;

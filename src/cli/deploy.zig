@@ -52,7 +52,7 @@ pub fn run(arena: Allocator, io: std.Io, environ: *const std.process.Environ.Map
     defer log.close() catch {};
     const out = &log.writer;
     for (config.notices) |notice| try out.print("notice: {s}\n", .{notice});
-    if (config.accessories.len > 0) try out.writeAll("notice: accessories are left as they are: Cowshed does not manage them yet\n");
+    if (config.accessories.len > 0) try out.writeAll("notice: accessories are left as they are: `cowshed accessory boot` starts them\n");
 
     if (options.migrate and config.migrate == null) {
         try out.writeAll("stopped: `--migrate` needs `migrate` in the config: nothing changed\n");
@@ -105,7 +105,7 @@ pub fn run(arena: Allocator, io: std.Io, environ: *const std.process.Environ.Map
     }
 
     // Before anything slow, and nothing reaches the server if one is missing.
-    const resolved = try resolveSecrets(arena, io, environ, out, config, options.secrets_path orelse config.secrets orelse secrets.DEFAULT_PATH) orelse return false;
+    const resolved = try resolveSecrets(arena, io, environ, out, config, config.env.secret, options.secrets_path orelse config.secrets orelse secrets.DEFAULT_PATH) orelse return false;
 
     var build_folder: ?[]const u8 = null;
     if (clean) {
@@ -157,14 +157,16 @@ pub fn run(arena: Allocator, io: std.Io, environ: *const std.process.Environ.Map
     return done;
 }
 
-fn resolveSecrets(arena: Allocator, io: std.Io, environ: *const std.process.Environ.Map, out: *std.Io.Writer, config: Config, path: []const u8) !?[]const core.Secret {
-    if (config.env.secret.len == 0) return &.{};
+/// `entries` as the config writes them (`NAME` or `NAME:SOURCE`): the app's, or an
+/// accessory's.
+pub fn resolveSecrets(arena: Allocator, io: std.Io, environ: *const std.process.Environ.Map, out: *std.Io.Writer, config: Config, entries: []const []const u8, path: []const u8) !?[]const core.Secret {
+    if (entries.len == 0) return &.{};
     const source = std.Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(MAX_SECRETS_BYTES)) catch |err| {
         try out.print("stopped: {s}: {t}\n", .{ path, err });
         return null;
     };
     var wanted: std.ArrayList([]const u8) = .empty;
-    for (config.env.secret) |entry| try wanted.append(arena, secrets.sourceOf(entry));
+    for (entries) |entry| try wanted.append(arena, secrets.sourceOf(entry));
 
     var context_state: SecretsContext = .{ .io = io, .environ = environ };
     if (config.env_file) |written| {
@@ -197,7 +199,7 @@ fn resolveSecrets(arena: Allocator, io: std.Io, environ: *const std.process.Envi
         else => |e| return e,
     };
     var out_secrets: std.ArrayList(core.Secret) = .empty;
-    for (config.env.secret, values) |entry, value| {
+    for (entries, values) |entry, value| {
         try out_secrets.append(arena, .{ .name = secrets.targetOf(entry), .value = value.value });
     }
     return out_secrets.items;

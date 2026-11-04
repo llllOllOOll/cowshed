@@ -23,7 +23,7 @@ on a throwaway server; `setup` and `deploy` also on a real one, for one app.
 | `cowshed remove --yes` | Route, containers, images and their files, for good. Without `--yes` it only lists them. Audit log, accessories, `replaces`, networks and what volumes hold stay |
 | `cowshed lock status / release` | The deploy lock |
 | `cowshed audit` | Who deployed what and when |
-| `cowshed accessory boot / stop / logs / exec NAME` | Long-lived services (database, Keycloak) |
+| `cowshed accessory boot / start / stop / logs / exec / remove NAME` | Long-lived containers beside the app (database, Keycloak), left alone by deploys |
 
 ## A project in a monorepo
 
@@ -161,6 +161,16 @@ The app joins Traefik's network, then the project's own (`networks`), all in its
 run`: joining one later would let it start without its database. Traefik's network is
 shared by every app on the server, so a database belongs on a network of the project's,
 where only what needs it sees it. A missing one is made; none is removed.
+
+## Accessories
+
+An accessory is `<service>-<name>`, labelled `accessory=<service>` and never
+`service=`, so listing, pruning and removing the app's versions never see it. Its files
+are in `~/.cowshed/accessories/<service>-<name>/`, apart from the app's env files, which
+the app's `remove` clears by prefix. It is booted once and left running; its
+`directories` hold its data and outlive it. A start counts only if it still runs a few
+seconds later with no restart: `--restart unless-stopped` would otherwise show one that
+dies at once as running, between two deaths.
 
 ## Drain
 

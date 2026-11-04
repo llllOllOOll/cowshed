@@ -291,6 +291,8 @@ as the routes folder is no longer read: `cowshed stop` them first.
 | See who deployed what | `cowshed audit` |
 | Go back, with no build | `cowshed rollback <version>` |
 | Take the app off the air | `cowshed stop` (a `rollback` brings it back) |
+| Start a database or another accessory | `cowshed accessory boot <name>` |
+| Run a command in one | `cowshed accessory exec <name> <command...>` |
 | See what removing would take | `cowshed remove` |
 
 ## When something stops
@@ -337,7 +339,8 @@ Follow the steps above, and these rules:
   a token or password is for the owner to run in their own terminal: a command run through your
   session, even by them, puts its output in front of you.
 - **Ask the owner first, each time,** for `cowshed proxy adopt --yes`, `cowshed remove --yes`,
-  `cowshed lock release`, `cowshed stop` and `cowshed rollback`. On a server other apps share,
+  `cowshed lock release`, `cowshed stop`, `cowshed rollback`, and `cowshed accessory stop` or
+  `remove --yes`: the app goes down without its database. On a server other apps share,
   also for `cowshed setup`, the first `cowshed deploy` and any copy into a volume. An earlier
   yes does not extend to another server or another time. The owner's own rules come before this
   list.
