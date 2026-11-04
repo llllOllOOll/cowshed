@@ -97,7 +97,9 @@ named in `replaces`, the project's networks and what volumes hold stay.
 ## Accessories
 
 **`cowshed accessory [-c <path>] [--secrets <path>] <action> <name>`** works on the
-config's long-lived containers, named `<service>-<name>`:
+config's long-lived containers, named `<service>-accessory-<name>`. A container of that
+name not labelled as this project's accessory is someone else's: every action refuses it
+and leaves it as it is.
 
 - `boot <name|all>` starts one that does not exist: its networks, folders, env file
   and files, then the container, which must still run, never restarted, a few seconds

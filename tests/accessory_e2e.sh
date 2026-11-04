@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # `cowshed accessory` through real SSH on a throwaway server (Docker in Docker): a
-# long-lived container with its secrets, files, directory and network, its life, and
-# what `remove` keeps.
+# long-lived container with its secrets, files, directory and network, its life, what
+# `remove` keeps, and a container of its name that is someone else's.
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -80,20 +80,29 @@ SECRETS
 cowshed() { (cd "$APP" && "$ROOT/zig-out/bin/cowshed" "$@"); }
 inside() { docker exec "$NAME" "$@"; }
 fail() { echo "FAILED: $*"; exit 1; }
-FOLDER=/root/.cowshed/accessories/acc-db
+FOLDER=/root/.cowshed/accessories/acc-accessory-db
+
+echo "== a container of its name that Cowshed did not make: refused, left as it is"
+inside docker run -d --name acc-accessory-db alpine:3 sleep 600 > /dev/null
+if cowshed accessory boot db > "$WORK/out"; then fail "boot took a foreign container"; fi
+grep -q "is not an accessory of acc" "$WORK/out" || fail "wrong reason: $(cat "$WORK/out")"
+if cowshed accessory reboot db > "$WORK/out"; then fail "reboot took a foreign container"; fi
+if cowshed accessory remove db --yes > "$WORK/out"; then fail "remove took a foreign container"; fi
+[ "$(inside docker inspect -f '{{.State.Running}} {{.Config.Image}}' acc-accessory-db)" = "true alpine:3" ] || fail "the foreign container was touched"
+inside docker rm -f acc-accessory-db > /dev/null
 
 echo "== boot: secrets, files, its directory and the project's network"
 cowshed accessory boot db | tee "$WORK/out"
-[ "$(inside docker inspect -f '{{.State.Running}}' acc-db)" = true ] || fail "it does not run"
+[ "$(inside docker inspect -f '{{.State.Running}}' acc-accessory-db)" = true ] || fail "it does not run"
 [ "$(inside cat "$FOLDER/directories/data/password")" = hidden-db-password ] || fail "the secret did not arrive"
 inside grep -q "CREATE DATABASE second" "$FOLDER/directories/data/init" || fail "the file did not arrive"
-[ "$(inside docker exec acc-db printenv DB_USER)" = app ] || fail "a clear variable did not arrive"
+[ "$(inside docker exec acc-accessory-db printenv DB_USER)" = app ] || fail "a clear variable did not arrive"
 [ "$(inside stat -c %a "$FOLDER/env")" = 600 ] || fail "the env file is not private"
-inside docker inspect -f '{{json .NetworkSettings.Networks}}' acc-db | grep -q '"acc-own"' || fail "not on the project's network"
-inside docker inspect -f '{{index .Config.Labels "accessory"}} {{index .Config.Labels "service"}}' acc-db | grep -qx 'acc ' || fail "wrong labels"
-inside docker inspect -f '{{json .Args}} {{json .Config.Cmd}} {{json .HostConfig.Binds}}' acc-db | grep -q hidden && fail "a secret on a command line"
+inside docker inspect -f '{{json .NetworkSettings.Networks}}' acc-accessory-db | grep -q '"acc-own"' || fail "not on the project's network"
+inside docker inspect -f '{{index .Config.Labels "accessory"}} {{index .Config.Labels "service"}}' acc-accessory-db | grep -qx 'acc ' || fail "wrong labels"
+inside docker inspect -f '{{json .Args}} {{json .Config.Cmd}} {{json .HostConfig.Binds}}' acc-accessory-db | grep -q hidden && fail "a secret on a command line"
 grep -q hidden "$WORK/out" && fail "a secret in the output"
-if inside docker exec acc-db sh -c 'echo x > /init/init.sql' 2>/dev/null; then fail "a file sent is writable"; fi
+if inside docker exec acc-accessory-db sh -c 'echo x > /init/init.sql' 2>/dev/null; then fail "a file sent is writable"; fi
 inside grep -q "accessory db booted" /root/.cowshed/audit-acc.log || fail "not in the audit log"
 
 echo "== boot again: left alone"
@@ -108,41 +117,41 @@ grep -q "exit code 3" "$WORK/out" || fail "no exit code"
 cowshed accessory logs db --lines 5 > /dev/null || fail "logs failed"
 
 echo "== stop and start: the same container"
-id=$(inside docker inspect -f '{{.Id}}' acc-db)
+id=$(inside docker inspect -f '{{.Id}}' acc-accessory-db)
 cowshed accessory stop db
-[ "$(inside docker inspect -f '{{.State.Running}}' acc-db)" = false ] || fail "it still runs"
+[ "$(inside docker inspect -f '{{.State.Running}}' acc-accessory-db)" = false ] || fail "it still runs"
 if cowshed accessory boot db > "$WORK/out"; then fail "boot started a stopped one"; fi
 grep -q "accessory start db" "$WORK/out" || fail "it did not say to start it"
 cowshed accessory start db
-[ "$(inside docker inspect -f '{{.Id}}' acc-db)" = "$id" ] || fail "start made another container"
+[ "$(inside docker inspect -f '{{.Id}}' acc-accessory-db)" = "$id" ] || fail "start made another container"
 
 echo "== reboot: the new settings, the data carried over, the old one gone"
-id=$(inside docker inspect -f '{{.Id}}' acc-db)
+id=$(inside docker inspect -f '{{.Id}}' acc-accessory-db)
 sed -i 's/DB_USER: app/DB_USER: changed/' "$APP/config/deploy.yml"
 cowshed accessory reboot db | tee "$WORK/out"
-[ "$(inside docker exec acc-db printenv DB_USER)" = changed ] || fail "the new settings did not take"
-[ "$(inside docker inspect -f '{{.Id}}' acc-db)" != "$id" ] || fail "not a new container"
-if inside docker inspect acc-db-replaced > /dev/null 2>&1; then fail "the old one stayed"; fi
+[ "$(inside docker exec acc-accessory-db printenv DB_USER)" = changed ] || fail "the new settings did not take"
+[ "$(inside docker inspect -f '{{.Id}}' acc-accessory-db)" != "$id" ] || fail "not a new container"
+if inside docker inspect acc-accessory-db-replaced > /dev/null 2>&1; then fail "the old one stayed"; fi
 [ "$(inside cat "$FOLDER/directories/data/password")" = hidden-db-password ] || fail "the data did not carry over"
 inside grep -q "accessory db rebooted" /root/.cowshed/audit-acc.log || fail "not in the audit log"
 
 echo "== a reboot that fails: the old one back, running"
-id=$(inside docker inspect -f '{{.Id}}' acc-db)
+id=$(inside docker inspect -f '{{.Id}}' acc-accessory-db)
 cp "$APP/config/deploy.yml" "$WORK/good.yml"
 sed -i "s|exec sleep 600|echo broken reboot; exit 1|" "$APP/config/deploy.yml"
 if cowshed accessory reboot db > "$WORK/out"; then fail "a broken reboot passed"; fi
 grep -q "broken reboot" "$WORK/out" || fail "its logs were not shown"
-grep -q "the old acc-db is back" "$WORK/out" || fail "wrong reason: $(cat "$WORK/out")"
-[ "$(inside docker inspect -f '{{.Id}} {{.State.Running}}' acc-db)" = "$id true" ] || fail "the old one is not back and running"
-if inside docker inspect acc-db-replaced > /dev/null 2>&1; then fail "a container set aside stayed"; fi
+grep -q "the old acc-accessory-db is back" "$WORK/out" || fail "wrong reason: $(cat "$WORK/out")"
+[ "$(inside docker inspect -f '{{.Id}} {{.State.Running}}' acc-accessory-db)" = "$id true" ] || fail "the old one is not back and running"
+if inside docker inspect acc-accessory-db-replaced > /dev/null 2>&1; then fail "a container set aside stayed"; fi
 cp "$WORK/good.yml" "$APP/config/deploy.yml"
 
 echo "== remove: only with --yes, its directory kept, and a boot finds it again"
 if cowshed accessory remove db > "$WORK/out"; then fail "removed without --yes"; fi
 grep -q "the directory data:/data stays" "$WORK/out" || fail "it did not say the directory stays"
-inside docker inspect acc-db > /dev/null || fail "removed without --yes"
+inside docker inspect acc-accessory-db > /dev/null || fail "removed without --yes"
 cowshed accessory remove db --yes
-if inside docker inspect acc-db > /dev/null 2>&1; then fail "the container stayed"; fi
+if inside docker inspect acc-accessory-db > /dev/null 2>&1; then fail "the container stayed"; fi
 inside test ! -e "$FOLDER/env" || fail "the env file stayed"
 inside test -s "$FOLDER/directories/data/password" || fail "the directory went"
 inside docker network inspect acc-own > /dev/null || fail "the network went"
@@ -153,17 +162,17 @@ cowshed accessory remove db --yes > /dev/null
 echo "== a route: healthy through Traefik, then reachable by its host, across a reboot"
 cowshed setup > /dev/null
 cowshed accessory boot auth | tee "$WORK/out"
-grep -q "health: acc-auth is healthy" "$WORK/out" || fail "its health was not asked"
+grep -q "health: acc-accessory-auth is healthy" "$WORK/out" || fail "its health was not asked"
 reach() { curl -s -H 'Host: auth.example' "http://127.0.0.1:$WEB_PORT/"; }
 first=$(reach)
 case "$first" in auth\ *) ;; *) fail "not reachable by its host: $first" ;; esac
-inside docker inspect -f '{{json .NetworkSettings.Networks}}' acc-auth | grep -q '"cowshed"' || fail "not on Traefik's network"
+inside docker inspect -f '{{json .NetworkSettings.Networks}}' acc-accessory-auth | grep -q '"cowshed"' || fail "not on Traefik's network"
 cowshed accessory reboot auth > "$WORK/out" || { cat "$WORK/out"; fail "the reboot failed"; }
 second=$(reach)
 case "$second" in auth\ *) ;; *) fail "not reachable after the reboot: $second" ;; esac
 [ "$second" != "$first" ] || fail "the reboot did not serve a new container"
 cowshed accessory remove auth --yes > "$WORK/out"
-inside test ! -e /root/.cowshed/traefik/routes/cowshed-acc-auth.yml || fail "its route file stayed"
+inside test ! -e /root/.cowshed/traefik/routes/cowshed-acc-accessory-auth.yml || fail "its route file stayed"
 code=
 for _ in $(seq 10); do
 	code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: auth.example' "http://127.0.0.1:$WEB_PORT/")
@@ -177,7 +186,7 @@ sed -i "s|exec sleep 600|echo broken setting; exit 1|" "$APP/config/deploy.yml"
 if cowshed accessory boot db > "$WORK/out"; then fail "a broken accessory passed"; fi
 grep -q "broken setting" "$WORK/out" || fail "its logs were not shown"
 grep -q "exited at once" "$WORK/out" || fail "wrong reason: $(cat "$WORK/out")"
-if inside docker inspect acc-db > /dev/null 2>&1; then fail "the broken one stayed"; fi
+if inside docker inspect acc-accessory-db > /dev/null 2>&1; then fail "the broken one stayed"; fi
 inside test -s "$FOLDER/directories/data/password" || fail "the directory went"
 
 echo "e2e passed"

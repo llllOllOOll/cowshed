@@ -173,9 +173,12 @@ where only what needs it sees it. A missing one is made; none is removed.
 
 ## Accessories
 
-An accessory is `<service>-<name>`, labelled `accessory=<service>` and never
-`service=`, so listing, pruning and removing the app's versions never see it. Its files
-are in `~/.cowshed/accessories/<service>-<name>/`, apart from the app's env files, which
+An accessory is `<service>-accessory-<name>`, labelled `accessory=<service>` and never
+`service=`, so listing, pruning and removing the app's versions never see it. The
+`accessory` in its name keeps it apart from containers other tools name
+`<service>-<name>`; one of its name without that label is not Cowshed's, and every action
+refuses it rather than take it for its own. Its files
+are in `~/.cowshed/accessories/<service>-accessory-<name>/`, apart from the app's env files, which
 the app's `remove` clears by prefix. It is booted once and left running; its
 `directories` hold its data and outlive it. A start counts only if it still runs a few
 seconds later with no restart: `--restart unless-stopped` would otherwise show one that

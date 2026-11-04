@@ -1,7 +1,9 @@
 //! Accessories: long-lived containers beside the app, such as its database, named
-//! `<service>-<name>`. Started once and left running across deploys; recreated only
-//! when asked. Their files live in `~/.cowshed/accessories/<service>-<name>/`, apart
-//! from the app's, so nothing done to the app reaches them.
+//! `<service>-accessory-<name>`. Started once and left running across deploys;
+//! recreated only when asked. Their files live in
+//! `~/.cowshed/accessories/<service>-accessory-<name>/`, apart from the app's, so
+//! nothing done to the app reaches them. A container of that name that is not labelled
+//! as this project's accessory is someone else's, and every action refuses it.
 
 const std = @import("std");
 const Config = @import("../config/Config.zig");
@@ -55,7 +57,7 @@ const STILL_RUNNING = "sleep \"$1\"; docker inspect --format '{{.State.Running}}
 const RUNNING_SINCE_START = "true 0";
 
 pub fn containerName(arena: Allocator, config: Config, accessory: Config.Accessory) Allocator.Error![]const u8 {
-    return std.fmt.allocPrint(arena, "{s}-{s}", .{ config.service, accessory.name });
+    return std.fmt.allocPrint(arena, "{s}-accessory-{s}", .{ config.service, accessory.name });
 }
 
 pub fn find(config: Config, name: []const u8) ?Config.Accessory {
@@ -111,12 +113,30 @@ fn traefikOf(proxied: Proxying) ?detect.Traefik {
     };
 }
 
-const State = enum { missing, running, stopped };
+const State = enum {
+    missing,
+    running,
+    stopped,
+    /// A container of that name that Cowshed did not make for this project.
+    foreign,
+};
 
-fn state(arena: Allocator, remote: Remote, name: []const u8) Remote.Error!State {
-    const inspected = try remote.run(arena, .{ .argv = try docker.containerState(arena, name) });
+fn state(arena: Allocator, remote: Remote, config: Config, name: []const u8) Remote.Error!State {
+    const inspected = try remote.run(arena, .{ .argv = try docker.accessoryState(arena, name) });
     if (!inspected.ok()) return .missing;
-    return if (std.mem.eql(u8, std.mem.trim(u8, inspected.stdout, " \r\n"), "true")) .running else .stopped;
+    var words = std.mem.tokenizeAny(u8, inspected.stdout, " \r\n");
+    const running = words.next() orelse "";
+    const owner = words.next() orelse "";
+    if (!std.mem.eql(u8, owner, config.service)) return .foreign;
+    return if (std.mem.eql(u8, running, "true")) .running else .stopped;
+}
+
+/// Its state, or null once a foreign container has been refused.
+fn ownState(arena: Allocator, remote: Remote, out: *Writer, config: Config, name: []const u8) Error!?State {
+    const found = try state(arena, remote, config, name);
+    if (found != .foreign) return found;
+    try out.print("stopped: a container named {s} exists and is not an accessory of {s} (no label accessory={s}). Cowshed does not touch it: rename or remove it yourself\n", .{ name, config.service, config.service });
+    return null;
 }
 
 fn audit(arena: Allocator, remote: Remote, config: Config, who: []const u8, message: []const u8) Remote.Error!void {
@@ -132,7 +152,7 @@ fn trimmed(text: []const u8) []const u8 {
 /// recreates it.
 pub fn boot(arena: Allocator, remote: Remote, out: *Writer, config: Config, accessory: Config.Accessory, input: Input) Error!bool {
     const name = try containerName(arena, config, accessory);
-    switch (try state(arena, remote, name)) {
+    switch (try ownState(arena, remote, out, config, name) orelse return false) {
         .running => {
             try out.print("accessory: {s} already runs; `cowshed accessory reboot {s}` recreates it\n", .{ name, accessory.name });
             return true;
@@ -141,7 +161,7 @@ pub fn boot(arena: Allocator, remote: Remote, out: *Writer, config: Config, acce
             try out.print("stopped: {s} exists and is stopped: `cowshed accessory start {s}`\n", .{ name, accessory.name });
             return false;
         },
-        .missing => {},
+        .missing, .foreign => {},
     }
     const proxied = try proxying(arena, remote, out, accessory);
     if (proxied == .stopped) return false;
@@ -167,11 +187,14 @@ pub fn reboot(arena: Allocator, remote: Remote, out: *Writer, config: Config, ac
     if (proxied == .stopped) return false;
     if (!try acquire(arena, remote, out, name, input.who, "rebooting")) return false;
     defer lock.release(arena, remote, name) catch {};
-    if (try state(arena, remote, old) != .missing) {
-        try out.print("stopped: {s} is there, from a reboot that did not end: see which of it and {s} holds what you need, and remove the other\n", .{ old, name });
-        return false;
+    switch (try ownState(arena, remote, out, config, old) orelse return false) {
+        .missing => {},
+        else => {
+            try out.print("stopped: {s} is there, from a reboot that did not end: see which of it and {s} holds what you need, and remove the other\n", .{ old, name });
+            return false;
+        },
     }
-    const before = try state(arena, remote, name);
+    const before = try ownState(arena, remote, out, config, name) orelse return false;
     // All that can fail before anything is touched.
     const ready = try prepare(arena, remote, out, config, accessory, input, name, traefikOf(proxied)) orelse return false;
     if (before == .missing) {
@@ -351,7 +374,7 @@ fn discard(arena: Allocator, remote: Remote, out: *Writer, name: []const u8, why
 
 pub fn start(arena: Allocator, remote: Remote, out: *Writer, config: Config, accessory: Config.Accessory, who: []const u8) Error!bool {
     const name = try containerName(arena, config, accessory);
-    switch (try state(arena, remote, name)) {
+    switch (try ownState(arena, remote, out, config, name) orelse return false) {
         .running => {
             try out.print("accessory: {s} already runs\n", .{name});
             return true;
@@ -360,7 +383,7 @@ pub fn start(arena: Allocator, remote: Remote, out: *Writer, config: Config, acc
             try out.print("stopped: {s} does not exist: `cowshed accessory boot {s}`\n", .{ name, accessory.name });
             return false;
         },
-        .stopped => {},
+        .stopped, .foreign => {},
     }
     const started = try remote.run(arena, .{ .argv = try docker.start(arena, name) });
     if (!started.ok()) {
@@ -375,7 +398,7 @@ pub fn start(arena: Allocator, remote: Remote, out: *Writer, config: Config, acc
 /// The container stays, with all it holds: `start` brings it back.
 pub fn stop(arena: Allocator, remote: Remote, out: *Writer, config: Config, accessory: Config.Accessory, who: []const u8) Error!bool {
     const name = try containerName(arena, config, accessory);
-    switch (try state(arena, remote, name)) {
+    switch (try ownState(arena, remote, out, config, name) orelse return false) {
         .missing => {
             try out.print("accessory: {s} does not exist\n", .{name});
             return true;
@@ -384,7 +407,7 @@ pub fn stop(arena: Allocator, remote: Remote, out: *Writer, config: Config, acce
             try out.print("accessory: {s} is already stopped\n", .{name});
             return true;
         },
-        .running => {},
+        .running, .foreign => {},
     }
     const stopped = try remote.run(arena, .{ .argv = try docker.stop(arena, name) });
     if (!stopped.ok()) {
@@ -398,6 +421,7 @@ pub fn stop(arena: Allocator, remote: Remote, out: *Writer, config: Config, acce
 
 pub fn logs(arena: Allocator, remote: Remote, out: *Writer, config: Config, accessory: Config.Accessory, lines: []const u8) Error!bool {
     const name = try containerName(arena, config, accessory);
+    _ = try ownState(arena, remote, out, config, name) orelse return false;
     const result = try remote.run(arena, .{ .argv = &.{ "docker", "logs", "--tail", lines, name } });
     try out.writeAll(result.stdout);
     try out.writeAll(result.stderr);
@@ -408,7 +432,8 @@ pub fn logs(arena: Allocator, remote: Remote, out: *Writer, config: Config, acce
 /// code decides; its output comes when it ends.
 pub fn exec(arena: Allocator, remote: Remote, out: *Writer, config: Config, accessory: Config.Accessory, command: []const []const u8) Error!bool {
     const name = try containerName(arena, config, accessory);
-    if (try state(arena, remote, name) != .running) {
+    const current = try ownState(arena, remote, out, config, name) orelse return false;
+    if (current != .running) {
         try out.print("stopped: {s} is not running\n", .{name});
         return false;
     }
@@ -427,7 +452,7 @@ pub fn exec(arena: Allocator, remote: Remote, out: *Writer, config: Config, acce
 /// with what they hold. Without `confirmed` it only tells.
 pub fn remove(arena: Allocator, remote: Remote, out: *Writer, config: Config, accessory: Config.Accessory, who: []const u8, confirmed: bool) Error!bool {
     const name = try containerName(arena, config, accessory);
-    const current = try state(arena, remote, name);
+    const current = try ownState(arena, remote, out, config, name) orelse return false;
     if (!confirmed) {
         try out.print("this removes the accessory {s} from {s}, and cannot be undone:\n", .{ name, config.host });
         try out.print("  the container {s} ({s}), its env file and the files sent\n", .{ name, @tagName(current) });
@@ -482,7 +507,7 @@ const DB: Config.Accessory = .{
     .directories = &.{"data:/var/lib/postgresql/data"},
 };
 const CONFIG: Config = .{ .service = "app", .image = "app", .host = "h", .networks = &.{"own"}, .accessories = &.{DB} };
-const FOLDER = "/home/u/.cowshed/accessories/app-db";
+const FOLDER = "/home/u/.cowshed/accessories/app-accessory-db";
 
 const Harness = struct {
     arena: std.heap.ArenaAllocator,
@@ -493,7 +518,7 @@ const Harness = struct {
         const a = self.arena.allocator();
         self.fake = Fake.init(a);
         self.output = .init(a);
-        try self.on("{{.State.Running}} app-db", 1, "");
+        try self.on("accessory\"}} app-accessory-db", 1, "");
         try self.on("mkdir -p \"$d/files\"", 0, FOLDER);
         try self.on("sleep \"$1\"", 0, "true 0\n");
     }
@@ -546,15 +571,15 @@ test "boot: its folder, its secrets on stdin, its files, then the container on t
     defer h.arena.deinit();
     try h.begin();
     try testing.expect(try h.boot());
-    try testing.expect(std.mem.endsWith(u8, h.line("mkdir \"$d\""), "sh app-db me, booting"));
+    try testing.expect(std.mem.endsWith(u8, h.line("mkdir \"$d\""), "sh app-accessory-db me, booting"));
     try testing.expect(h.fake.ran("docker network inspect --format {{.Name}} own"));
-    try testing.expect(std.mem.endsWith(u8, h.line("mkdir -p \"$d/files\""), "sh app-db data"));
+    try testing.expect(std.mem.endsWith(u8, h.line("mkdir -p \"$d/files\""), "sh app-accessory-db data"));
     const env = h.fake.calls.items[h.fake.position("cat > \"$1/env\"").?];
     try testing.expectEqualStrings("POSTGRES_PASSWORD=s3cret\n", env.stdin.?);
     const file = h.fake.calls.items[h.fake.position("cat > \"$1/files/$2\"").?];
     try testing.expect(std.mem.endsWith(u8, file.line, FOLDER ++ " 0-init.sql"));
     try testing.expectEqualStrings("CREATE DATABASE kc;\n", file.stdin.?);
-    const run = h.line("docker run -d --name app-db");
+    const run = h.line("docker run -d --name app-accessory-db");
     for ([_][]const u8{
         "--network own",
         "--publish 127.0.0.1:5432:5432",
@@ -571,18 +596,18 @@ test "boot: its folder, its secrets on stdin, its files, then the container on t
     // No secret on any command line.
     for (h.fake.calls.items) |call| try testing.expect(std.mem.indexOf(u8, call.line, "s3cret") == null);
     try testing.expect(h.fake.ran("accessory db booted"));
-    try h.says("accessory: app-db runs");
+    try h.says("accessory: app-accessory-db runs");
 }
 
 test "boot: one that runs is left alone, one that is stopped is told" {
     var h = harness();
     defer h.arena.deinit();
     try h.begin();
-    try h.on("{{.State.Running}} app-db", 0, "true\n");
+    try h.on("accessory\"}} app-accessory-db", 0, "true app\n");
     try testing.expect(try h.boot());
     try h.says("already runs");
     try testing.expect(!h.fake.ran("docker run"));
-    try h.on("{{.State.Running}} app-db", 0, "false\n");
+    try h.on("accessory\"}} app-accessory-db", 0, "false app\n");
     try testing.expect(!try h.boot());
     try h.says("`cowshed accessory start db`");
     try testing.expect(!h.fake.ran("docker run"));
@@ -600,7 +625,7 @@ test "boot: one that exits at once is shown, removed, its directories kept" {
     try testing.expect(!try h.boot());
     try h.says("FATAL: bad setting");
     try h.says("exited at once; its directories stay");
-    try testing.expect(h.fake.ran("docker rm -f app-db"));
+    try testing.expect(h.fake.ran("docker rm -f app-accessory-db"));
     try testing.expect(!h.fake.ran("\"$d/env\" \"$d/files\""));
 }
 
@@ -611,7 +636,7 @@ test "boot: a start that fails leaves no container, a network that cannot be mad
         try h.begin();
         try h.on("docker run -d", 125, "");
         try testing.expect(!try h.boot());
-        try testing.expect(h.fake.ran("docker rm -f app-db"));
+        try testing.expect(h.fake.ran("docker rm -f app-accessory-db"));
         try h.says("did not start: the error");
     }
     {
@@ -633,7 +658,7 @@ test "boot: a lock held stops it" {
     try h.on("mkdir \"$d\"", 1, "");
     try h.on("cat \"$HOME/.cowshed/locks/$1/details\"", 0, "someone, booting");
     try testing.expect(!try h.boot());
-    try h.says("holds the lock of app-db");
+    try h.says("holds the lock of app-accessory-db");
     try testing.expect(!h.fake.ran("docker run"));
 }
 
@@ -655,15 +680,15 @@ test "start, stop, exec: by its state" {
     try h.says("`cowshed accessory boot db`");
     try testing.expect(try stop(a, remote, out, CONFIG, DB, "me"));
     try testing.expect(!try exec(a, remote, out, CONFIG, DB, &.{"psql"}));
-    try h.on("{{.State.Running}} app-db", 0, "false\n");
+    try h.on("accessory\"}} app-accessory-db", 0, "false app\n");
     try testing.expect(try start(a, remote, out, CONFIG, DB, "me"));
-    try testing.expect(h.fake.ran("docker start app-db"));
-    try h.on("{{.State.Running}} app-db", 0, "true\n");
+    try testing.expect(h.fake.ran("docker start app-accessory-db"));
+    try h.on("accessory\"}} app-accessory-db", 0, "true app\n");
     try testing.expect(try stop(a, remote, out, CONFIG, DB, "me"));
-    try testing.expect(h.fake.ran("docker stop app-db"));
-    try h.on("docker exec app-db", 0, "1 row\n");
+    try testing.expect(h.fake.ran("docker stop app-accessory-db"));
+    try h.on("docker exec app-accessory-db", 0, "1 row\n");
     try testing.expect(try exec(a, remote, out, CONFIG, DB, &.{ "psql", "-c", "select 1" }));
-    try testing.expect(h.fake.ran("docker exec app-db psql -c select 1"));
+    try testing.expect(h.fake.ran("docker exec app-accessory-db psql -c select 1"));
     try h.says("1 row");
 }
 
@@ -671,13 +696,13 @@ test "remove: tells without --yes; with it takes the container and its files, ne
     var h = harness();
     defer h.arena.deinit();
     try h.begin();
-    try h.on("{{.State.Running}} app-db", 0, "true\n");
+    try h.on("accessory\"}} app-accessory-db", 0, "true app\n");
     const a = h.arena.allocator();
     try testing.expect(!try remove(a, h.fake.remote(), &h.output.writer, CONFIG, DB, "me", false));
     try h.says("the directory data:/var/lib/postgresql/data stays");
     try testing.expect(!h.fake.ran("docker rm"));
     try testing.expect(try remove(a, h.fake.remote(), &h.output.writer, CONFIG, DB, "me", true));
-    try testing.expect(h.fake.ran("docker rm -f app-db"));
+    try testing.expect(h.fake.ran("docker rm -f app-accessory-db"));
     const files = h.line("rm -rf");
     try testing.expect(std.mem.indexOf(u8, files, "\"$d/env\" \"$d/files\"") != null);
     try testing.expect(std.mem.indexOf(u8, files, "directories") == null);
@@ -688,14 +713,14 @@ test "reboot: prepared first, the old one set aside and stopped, the new one pro
     var h = harness();
     defer h.arena.deinit();
     try h.begin();
-    try h.on("{{.State.Running}} app-db", 0, "true\n");
-    try h.on("{{.State.Running}} app-db-replaced", 1, "");
+    try h.on("accessory\"}} app-accessory-db", 0, "true app\n");
+    try h.on("accessory\"}} app-accessory-db-replaced", 1, "");
     const a = h.arena.allocator();
     try testing.expect(try reboot(a, h.fake.remote(), &h.output.writer, CONFIG, DB, INPUT));
-    try h.before("cat > \"$1/files/$2\"", "docker rename app-db app-db-replaced");
-    try h.before("docker rename app-db app-db-replaced", "docker stop app-db-replaced");
-    try h.before("docker stop app-db-replaced", "docker run -d --name app-db");
-    try h.before("sleep \"$1\"", "docker rm -f app-db-replaced");
+    try h.before("cat > \"$1/files/$2\"", "docker rename app-accessory-db app-accessory-db-replaced");
+    try h.before("docker rename app-accessory-db app-accessory-db-replaced", "docker stop app-accessory-db-replaced");
+    try h.before("docker stop app-accessory-db-replaced", "docker run -d --name app-accessory-db");
+    try h.before("sleep \"$1\"", "docker rm -f app-accessory-db-replaced");
     try testing.expect(h.fake.ran("accessory db rebooted"));
     try h.says("what it serves is cut until the new one runs");
 }
@@ -704,15 +729,15 @@ test "reboot: a new one that fails puts the old one back, running" {
     var h = harness();
     defer h.arena.deinit();
     try h.begin();
-    try h.on("{{.State.Running}} app-db", 0, "true\n");
-    try h.on("{{.State.Running}} app-db-replaced", 1, "");
+    try h.on("accessory\"}} app-accessory-db", 0, "true app\n");
+    try h.on("accessory\"}} app-accessory-db-replaced", 1, "");
     try h.on("sleep \"$1\"", 0, "true 1\n");
     const a = h.arena.allocator();
     try testing.expect(!try reboot(a, h.fake.remote(), &h.output.writer, CONFIG, DB, INPUT));
-    try h.before("docker rm -f app-db", "docker rename app-db-replaced app-db");
-    try h.before("docker rename app-db-replaced app-db", "docker start app-db");
-    try testing.expect(!h.fake.ran("docker rm -f app-db-replaced"));
-    try h.says("the old app-db is back");
+    try h.before("docker rm -f app-accessory-db", "docker rename app-accessory-db-replaced app-accessory-db");
+    try h.before("docker rename app-accessory-db-replaced app-accessory-db", "docker start app-accessory-db");
+    try testing.expect(!h.fake.ran("docker rm -f app-accessory-db-replaced"));
+    try h.says("the old app-accessory-db is back");
     try testing.expect(h.fake.ran("reboot failed, the old one back"));
 }
 
@@ -721,19 +746,19 @@ test "reboot: a stopped one comes back stopped; a missing one is booted; a lefto
         var h = harness();
         defer h.arena.deinit();
         try h.begin();
-        try h.on("{{.State.Running}} app-db", 0, "false\n");
-        try h.on("{{.State.Running}} app-db-replaced", 1, "");
+        try h.on("accessory\"}} app-accessory-db", 0, "false app\n");
+        try h.on("accessory\"}} app-accessory-db-replaced", 1, "");
         try h.on("sleep \"$1\"", 0, "false 0\n");
         try testing.expect(!try reboot(h.arena.allocator(), h.fake.remote(), &h.output.writer, CONFIG, DB, INPUT));
         try testing.expect(!h.fake.ran("docker stop"));
         try testing.expect(!h.fake.ran("docker start"));
-        try testing.expect(h.fake.ran("docker rename app-db-replaced app-db"));
+        try testing.expect(h.fake.ran("docker rename app-accessory-db-replaced app-accessory-db"));
     }
     {
         var h = harness();
         defer h.arena.deinit();
         try h.begin();
-        try h.on("{{.State.Running}} app-db-replaced", 1, "");
+        try h.on("accessory\"}} app-accessory-db-replaced", 1, "");
         try testing.expect(try reboot(h.arena.allocator(), h.fake.remote(), &h.output.writer, CONFIG, DB, INPUT));
         try testing.expect(!h.fake.ran("docker rename"));
         try h.says("does not exist; booting it");
@@ -742,8 +767,8 @@ test "reboot: a stopped one comes back stopped; a missing one is booted; a lefto
         var h = harness();
         defer h.arena.deinit();
         try h.begin();
-        try h.on("{{.State.Running}} app-db", 0, "true\n");
-        try h.on("{{.State.Running}} app-db-replaced", 0, "false\n");
+        try h.on("accessory\"}} app-accessory-db", 0, "true app\n");
+        try h.on("accessory\"}} app-accessory-db-replaced", 0, "false app\n");
         try testing.expect(!try reboot(h.arena.allocator(), h.fake.remote(), &h.output.writer, CONFIG, DB, INPUT));
         try h.says("from a reboot that did not end");
         try testing.expect(!h.fake.ran("docker run"));
@@ -755,12 +780,46 @@ test "reboot: a failure before anything is touched leaves the old one running" {
     var h = harness();
     defer h.arena.deinit();
     try h.begin();
-    try h.on("{{.State.Running}} app-db", 0, "true\n");
-    try h.on("{{.State.Running}} app-db-replaced", 1, "");
+    try h.on("accessory\"}} app-accessory-db", 0, "true app\n");
+    try h.on("accessory\"}} app-accessory-db-replaced", 1, "");
     try h.on("cat > \"$1/files/$2\"", 1, "");
     try testing.expect(!try reboot(h.arena.allocator(), h.fake.remote(), &h.output.writer, CONFIG, DB, INPUT));
     try testing.expect(!h.fake.ran("docker rename"));
     try testing.expect(!h.fake.ran("docker stop"));
+}
+
+test "a container of its name that is not this project's accessory is refused by every action" {
+    // As another tool leaves it: no `accessory` label, or another project's.
+    for ([_][]const u8{ "true \n", "true other\n" }) |found| {
+        var h = harness();
+        defer h.arena.deinit();
+        try h.begin();
+        try h.on("accessory\"}} app-accessory-db", 0, found);
+        const a = h.arena.allocator();
+        const remote = h.fake.remote();
+        const out = &h.output.writer;
+        try testing.expect(!try h.boot());
+        try testing.expect(!try reboot(a, remote, out, CONFIG, DB, INPUT));
+        try testing.expect(!try start(a, remote, out, CONFIG, DB, "me"));
+        try testing.expect(!try stop(a, remote, out, CONFIG, DB, "me"));
+        try testing.expect(!try logs(a, remote, out, CONFIG, DB, "10"));
+        try testing.expect(!try exec(a, remote, out, CONFIG, DB, &.{"psql"}));
+        try testing.expect(!try remove(a, remote, out, CONFIG, DB, "me", false));
+        try testing.expect(!try remove(a, remote, out, CONFIG, DB, "me", true));
+        try h.says("a container named app-accessory-db exists and is not an accessory of app");
+        for ([_][]const u8{ "docker run", "docker rename", "docker stop", "docker start", "docker rm", "docker logs", "docker exec", "cat > \"$1/env\"" }) |touched| {
+            if (h.fake.ran(touched)) {
+                std.debug.print("ran `{s}` on a foreign container\n", .{touched});
+                return error.TestTouchedForeign;
+            }
+        }
+    }
+}
+
+test "the name is the service's, marked as an accessory" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    try testing.expectEqualStrings("app-accessory-db", try containerName(arena.allocator(), CONFIG, DB));
 }
 
 const KEYCLOAK: Config.Accessory = .{
@@ -781,11 +840,11 @@ const TRAEFIK_INSPECT =
 fn withTraefik(h: *Harness) !void {
     try h.on("docker ps --format", 0, "t1\ttraefik:3\ttraefik\n");
     try h.on("docker inspect --format {{json", 0, TRAEFIK_INSPECT);
-    try h.on("{{.State.Running}} app-keycloak", 1, "");
-    try h.on("mkdir -p \"$d/files\"", 0, "/home/u/.cowshed/accessories/app-keycloak");
+    try h.on("accessory\"}} app-accessory-keycloak", 1, "");
+    try h.on("mkdir -p \"$d/files\"", 0, "/home/u/.cowshed/accessories/app-accessory-keycloak");
     // No route yet.
     try h.on("cat \"$1/$2\"", 1, "");
-    try h.on("wget -qO- http://127.0.0.1:8080", 0, "{\"url\":\"http://app-keycloak:8080\"}");
+    try h.on("wget -qO- http://127.0.0.1:8080", 0, "{\"url\":\"http://app-accessory-keycloak:8080\"}");
 }
 
 test "proxy: on Traefik's network first, healthy through Traefik, then its route" {
@@ -794,15 +853,16 @@ test "proxy: on Traefik's network first, healthy through Traefik, then its route
     try h.begin();
     try withTraefik(&h);
     // Running from the start once it exists.
-    try h.fake.onAfter("docker run -d --name app-keycloak", "{{.State.Running}} app-keycloak", .{ .result = .{ .exit_code = 0, .stdout = "true\n" } });
+    try h.fake.onAfter("docker run -d --name app-accessory-keycloak", "accessory\"}} app-accessory-keycloak", .{ .result = .{ .exit_code = 0, .stdout = "true app\n" } });
+    try h.fake.onAfter("docker run -d --name app-accessory-keycloak", "{{.State.Running}} app-accessory-keycloak", .{ .result = .{ .exit_code = 0, .stdout = "true\n" } });
     const a = h.arena.allocator();
     try testing.expect(try boot(a, h.fake.remote(), &h.output.writer, PROXIED, KEYCLOAK, .{ .who = "me" }));
-    try testing.expect(std.mem.indexOf(u8, h.line("docker run -d --name app-keycloak"), "--network public --network own") != null);
-    try testing.expect(h.fake.ran("wget -q -O /dev/null -T 5 http://app-keycloak:8080/realms/master"));
+    try testing.expect(std.mem.indexOf(u8, h.line("docker run -d --name app-accessory-keycloak"), "--network public --network own") != null);
+    try testing.expect(h.fake.ran("wget -q -O /dev/null -T 5 http://app-accessory-keycloak:8080/realms/master"));
     try h.before("wget -q -O /dev/null", "cat > \"$1/.$2.tmp\"");
     const route_write = h.fake.calls.items[h.fake.position("cat > \"$1/.$2.tmp\"").?];
-    try testing.expect(std.mem.endsWith(u8, route_write.line, "/routes cowshed-app-keycloak.yml"));
-    try testing.expect(std.mem.indexOf(u8, route_write.stdin.?, "url: http://app-keycloak:8080") != null);
+    try testing.expect(std.mem.endsWith(u8, route_write.line, "/routes cowshed-app-accessory-keycloak.yml"));
+    try testing.expect(std.mem.indexOf(u8, route_write.stdin.?, "url: http://app-accessory-keycloak:8080") != null);
     try testing.expect(std.mem.indexOf(u8, route_write.stdin.?, "Host(`auth.example`)") != null);
     // No settle wait: health decides.
     try testing.expect(!h.fake.ran("sleep \"$1\""));
@@ -813,14 +873,15 @@ test "proxy: unhealthy is shown and removed, and no route is written" {
     defer h.arena.deinit();
     try h.begin();
     try withTraefik(&h);
-    try h.fake.onAfter("docker run -d --name app-keycloak", "{{.State.Running}} app-keycloak", .{ .result = .{ .exit_code = 0, .stdout = "true\n" } });
+    try h.fake.onAfter("docker run -d --name app-accessory-keycloak", "accessory\"}} app-accessory-keycloak", .{ .result = .{ .exit_code = 0, .stdout = "true app\n" } });
+    try h.fake.onAfter("docker run -d --name app-accessory-keycloak", "{{.State.Running}} app-accessory-keycloak", .{ .result = .{ .exit_code = 0, .stdout = "true\n" } });
     try h.on("wget -q -O /dev/null", 1, "");
     try h.on("docker logs", 0, "still starting\n");
     const a = h.arena.allocator();
     try testing.expect(!try boot(a, h.fake.remote(), &h.output.writer, PROXIED, KEYCLOAK, .{ .who = "me" }));
     try h.says("did not pass its health check");
     try h.says("still starting");
-    try testing.expect(h.fake.ran("docker rm -f app-keycloak"));
+    try testing.expect(h.fake.ran("docker rm -f app-accessory-keycloak"));
     try testing.expect(!h.fake.ran("cat > \"$1/.$2.tmp\""));
 }
 
@@ -830,7 +891,7 @@ test "proxy: with no Traefik nothing starts; remove takes its route" {
         defer h.arena.deinit();
         try h.begin();
         try h.on("docker ps --format", 0, "");
-        try h.on("{{.State.Running}} app-keycloak", 1, "");
+        try h.on("accessory\"}} app-accessory-keycloak", 1, "");
         try testing.expect(!try boot(h.arena.allocator(), h.fake.remote(), &h.output.writer, PROXIED, KEYCLOAK, .{ .who = "me" }));
         try h.says("needs Traefik, and none runs here");
         try testing.expect(!h.fake.ran("docker run"));
@@ -841,8 +902,8 @@ test "proxy: with no Traefik nothing starts; remove takes its route" {
         defer h.arena.deinit();
         try h.begin();
         try withTraefik(&h);
-        try h.on("{{.State.Running}} app-keycloak", 0, "true\n");
+        try h.on("accessory\"}} app-accessory-keycloak", 0, "true app\n");
         try testing.expect(try remove(h.arena.allocator(), h.fake.remote(), &h.output.writer, PROXIED, KEYCLOAK, "me", true));
-        try testing.expect(std.mem.endsWith(u8, h.line("rm -f \"$1/$2\""), "/routes cowshed-app-keycloak.yml"));
+        try testing.expect(std.mem.endsWith(u8, h.line("rm -f \"$1/$2\""), "/routes cowshed-app-accessory-keycloak.yml"));
     }
 }

@@ -81,7 +81,7 @@ pub const Migrate = struct {
     timeout_s: u32 = DEFAULT_MIGRATE_TIMEOUT_S,
 };
 
-/// A long-lived container beside the app, such as its database: `<service>-<name>`
+/// A long-lived container beside the app, such as its database: `<service>-accessory-<name>`
 /// on the app's server, started once and left running across deploys.
 pub const Accessory = struct {
     name: []const u8,

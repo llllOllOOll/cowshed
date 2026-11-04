@@ -148,7 +148,7 @@ once, and it runs on the server before the migration:
 
 ```yaml
 backup:
-  command: docker exec my-db pg_dump -U me -Fc mydb > "$COWSHED_BACKUP_DIR/mydb.dump"
+  command: docker exec my-app-accessory-db pg_dump -U me -Fc mydb > "$COWSHED_BACKUP_DIR/mydb.dump"
 ```
 
 An app whose tool is in its image runs that image, with the volume and the folder mounted:

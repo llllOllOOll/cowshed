@@ -19,6 +19,11 @@ pub fn containerState(arena: Allocator, name: []const u8) Allocator.Error![]cons
     return arena.dupe([]const u8, &.{ "docker", "inspect", "--format", "{{.State.Running}}", name });
 }
 
+/// Running or not, then whose accessory it is: empty for a container Cowshed did not make.
+pub fn accessoryState(arena: Allocator, name: []const u8) Allocator.Error![]const []const u8 {
+    return arena.dupe([]const u8, &.{ "docker", "inspect", "--format", "{{.State.Running}} {{index .Config.Labels \"accessory\"}}", name });
+}
+
 pub fn start(arena: Allocator, name: []const u8) Allocator.Error![]const []const u8 {
     return arena.dupe([]const u8, &.{ "docker", "start", name });
 }
