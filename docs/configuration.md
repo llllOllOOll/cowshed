@@ -61,9 +61,10 @@ cpus: 2                   # Optional limits
 memory: 1g
 deploy_timeout: 30        # Seconds for the new version to prove healthy
 drain_timeout: 30         # Seconds for the old one's connections to end
-replaces: old-container   # Optional: from before Cowshed; stopped, never removed
+replaces: old-container   # Optional: from before Cowshed; stopped, never removed.
+                          # `old-web-*`: every running container whose name starts so
 accessories:              # Optional: long-lived containers beside the app
-  db:                     # Runs as `<service>-db`
+  db:                     # Runs as `<service>-accessory-db`
     image: postgres:17-alpine
     port: 127.0.0.1:5432:5432  # Optional: `--publish`
     cmd: postgres -c max_connections=200  # Optional

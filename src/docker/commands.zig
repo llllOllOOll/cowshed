@@ -217,14 +217,16 @@ fn appendWords(arena: Allocator, argv: *std.ArrayList([]const u8), text: []const
     if (in_word) try argv.append(arena, try word.toOwnedSlice(arena));
 }
 
+/// The app's versions: Cowshed's, which carry a `version` label beside `service`.
+/// Another tool's containers may share the service's label; they are not ours.
 pub fn listAll(arena: Allocator, service: []const u8) Allocator.Error![]const []const u8 {
-    return arena.dupe([]const u8, &.{ "docker", "ps", "-a", "--filter", try std.fmt.allocPrint(arena, "label=service={s}", .{service}), "--format", "{{.Names}}\t{{.State}}\t{{.Label \"version\"}}\t{{.Label \"sources\"}}\t{{.CreatedAt}}" });
+    return arena.dupe([]const u8, &.{ "docker", "ps", "-a", "--filter", try std.fmt.allocPrint(arena, "label=service={s}", .{service}), "--filter", "label=version", "--format", "{{.Names}}\t{{.State}}\t{{.Label \"version\"}}\t{{.Label \"sources\"}}\t{{.CreatedAt}}" });
 }
 
-/// Only images Cowshed built, which carry the service's label: older ones of the
-/// same name are not ours to remove.
+/// Only images Cowshed built, which carry the service's label and a `version`: older
+/// ones of the same name, or another tool's with the same label, are not ours to remove.
 pub fn imageTags(arena: Allocator, image: []const u8, service: []const u8) Allocator.Error![]const []const u8 {
-    return arena.dupe([]const u8, &.{ "docker", "images", "--filter", try std.fmt.allocPrint(arena, "reference={s}", .{image}), "--filter", try std.fmt.allocPrint(arena, "label=service={s}", .{service}), "--format", "{{.Tag}}" });
+    return arena.dupe([]const u8, &.{ "docker", "images", "--filter", try std.fmt.allocPrint(arena, "reference={s}", .{image}), "--filter", try std.fmt.allocPrint(arena, "label=service={s}", .{service}), "--filter", "label=version", "--format", "{{.Tag}}" });
 }
 
 pub fn pid(arena: Allocator, name: []const u8) Allocator.Error![]const []const u8 {
@@ -303,4 +305,13 @@ test "image tags ask for the service's label" {
     defer arena.deinit();
     const argv = try imageTags(arena.allocator(), "app", "s");
     try testing.expectEqualStrings("label=service=s", argv[5]);
+    try testing.expectEqualStrings("label=version", argv[7]);
+}
+
+test "versions are those with Cowshed's labels: the service's and a version" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const argv = try listAll(arena.allocator(), "s");
+    try testing.expectEqualStrings("label=service=s", argv[4]);
+    try testing.expectEqualStrings("label=version", argv[6]);
 }

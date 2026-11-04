@@ -127,7 +127,8 @@ ssh: Ssh = .{},
 builder: Builder = .{},
 deploy_timeout_s: u32 = DEFAULT_DEPLOY_TIMEOUT_S,
 drain_timeout_s: u32 = DEFAULT_DRAIN_TIMEOUT_S,
-/// A container from before Cowshed, stopped once its traffic has moved.
+/// A container from before Cowshed, stopped once its traffic has moved. Ending in
+/// `*`, every running container whose name starts with what comes before it.
 replaces: ?[]const u8 = null,
 /// The secrets file, if not the default.
 secrets: ?[]const u8 = null,
@@ -422,6 +423,11 @@ const Reader = struct {
         };
         try self.readServers(root, &config);
         try self.checkNames(root, config);
+        if (config.replaces) |replaces| {
+            if (!isReplaced(replaces)) {
+                try self.problem(root.get("replaces").?.line, "`replaces` is a container's name, or the start of names followed by `*`: letters, digits, `_`, `.` and `-`, starting with a letter or digit: `{s}`", .{replaces});
+            }
+        }
         if (root.get("volumes")) |entry| {
             if (entry.value == .list) {
                 for (entry.value.list, 0..) |item, i| {
@@ -584,6 +590,12 @@ fn isNetworkName(name: []const u8) bool {
         if (!(std.ascii.isAlphanumeric(c) or c == '_' or c == '.' or c == '-')) return false;
     }
     return true;
+}
+
+/// A container's name, or the start of names followed by `*`.
+fn isReplaced(value: []const u8) bool {
+    const name = if (std.mem.endsWith(u8, value, "*")) value[0 .. value.len - 1] else value;
+    return isNetworkName(name);
 }
 
 fn isJoinableNetwork(name: []const u8) bool {
@@ -781,6 +793,23 @@ test "networks of the project's own" {
         try testing.expect(std.mem.indexOf(u8, problems.items[0].message, "is Docker's own") != null);
     }
     try expectProblem(MINIMAL ++ "networks: orbitx\n", "`.networks` must be a list");
+}
+
+test "replaces: a name, or the start of names" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var problems: std.ArrayList(Problem) = .empty;
+    for ([_][]const u8{ "legacy", "orbitx-web-*" }) |good| {
+        const source = try std.fmt.allocPrint(arena.allocator(), MINIMAL ++ "replaces: \"{s}\"\n", .{good});
+        const config = try parse(arena.allocator(), source, &problems);
+        try testing.expectEqualStrings(good, config.replaces.?);
+    }
+    for ([_][]const u8{ "*", "a*b", "a**", "-a*", "a b" }) |bad| {
+        const source = try std.fmt.allocPrint(arena.allocator(), MINIMAL ++ "replaces: \"{s}\"\n", .{bad});
+        problems = .empty;
+        try testing.expectError(error.InvalidConfig, parse(arena.allocator(), source, &problems));
+        try testing.expect(std.mem.indexOf(u8, problems.items[0].message, "`replaces` is a container's name") != null);
+    }
 }
 
 test "an accessory" {

@@ -92,7 +92,8 @@ by the env file. Only its name is said.
 
 **`cowshed remove [--yes]`** removes the app from the server for good: route, containers,
 images and their files. Without `--yes` it only lists them. The audit log, a container
-named in `replaces`, the project's networks and what volumes hold stay.
+named in `replaces`, the project's networks and what volumes hold stay, as do containers
+and images without Cowshed's `version` label, even with the service's.
 
 ## Accessories
 

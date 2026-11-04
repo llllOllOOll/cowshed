@@ -452,8 +452,12 @@ fn retireOld(self: Run, new_name: []const u8) Error!void {
         const state = fields.next() orelse continue;
         if (std.mem.eql(u8, state, "running") and !std.mem.eql(u8, name, new_name)) try old.append(self.arena, name);
     }
-    if (config.replaces) |name| {
-        if (try isRunning(self, name)) try old.append(self.arena, name);
+    if (config.replaces) |replaces| {
+        if (std.mem.endsWith(u8, replaces, "*")) {
+            try appendReplaced(self, &old, replaces[0 .. replaces.len - 1], new_name);
+        } else if (try isRunning(self, replaces)) {
+            try old.append(self.arena, replaces);
+        }
     }
     if (old.items.len == 0) {
         try self.say("old: nothing else was running", .{});
@@ -475,6 +479,23 @@ fn retireOld(self: Run, new_name: []const u8) Error!void {
         } else {
             try self.say("notice: could not stop {s}: {s}", .{ name, std.mem.trimEnd(u8, stopped.stderr, "\r\n") });
         }
+    }
+}
+
+/// Every running container whose name starts with `prefix`, but the new one and
+/// those already to stop: Cowshed's own versions may share the start.
+fn appendReplaced(self: Run, old: *std.ArrayList([]const u8), prefix: []const u8, new_name: []const u8) Error!void {
+    const listed = try self.ask(docker.list_running);
+    if (!listed.ok()) {
+        try self.say("notice: could not list what `replaces` names: {s}", .{std.mem.trimEnd(u8, listed.stderr, "\r\n")});
+        return;
+    }
+    next: for (try detect.parseRunning(self.arena, listed.stdout)) |container| {
+        if (!std.mem.startsWith(u8, container.name, prefix) or std.mem.eql(u8, container.name, new_name)) continue;
+        for (old.items) |name| {
+            if (std.mem.eql(u8, name, container.name)) continue :next;
+        }
+        try old.append(self.arena, container.name);
     }
 }
 
@@ -1115,6 +1136,29 @@ test "a container from before Cowshed is stopped, never removed" {
     try testing.expect(try h.deploy(config));
     try testing.expect(h.fake.ran("docker stop grape-arena"));
     try testing.expect(!h.fake.ran("docker rm -f grape-arena"));
+}
+
+test "replaces ending in `*`: every container of that start, never the new one or another" {
+    var h = harness();
+    defer h.arena.deinit();
+    try h.begin();
+    try h.on("docker ps --format", 0, "t1\ttraefik:3\ttraefik\t0.0.0.0:80->80/tcp, 0.0.0.0:443->443/tcp\tweb\n" ++
+        "k1\tapp:5b3f\tapp-web-5b3f\t3000/tcp\tweb\n" ++
+        "n1\tapp:v2\tapp-web-v2\t80/tcp\tweb\n" ++
+        "o1\tapp:v1\tapp-web-v1\t80/tcp\tweb\n" ++
+        "d1\tpostgres:17\tapp-db\t5432/tcp\tweb\n");
+    var config = PROXIED;
+    config.replaces = "app-web-*";
+    try testing.expect(try h.deploy(config));
+    try h.says("old: stopping app-web-5b3f");
+    try testing.expect(h.fake.ran("docker stop app-web-5b3f"));
+    try testing.expect(h.fake.ran("docker stop app-web-v1"));
+    try testing.expect(!h.fake.ran("docker stop app-web-v2"));
+    try testing.expect(!h.fake.ran("docker stop app-db"));
+    try testing.expect(!h.fake.ran("docker rm -f app-web-5b3f"));
+    const out = h.output.written();
+    const first = std.mem.indexOf(u8, out, "old: stopping app-web-v1").?;
+    try testing.expect(std.mem.indexOfPos(u8, out, first + 1, "old: stopping app-web-v1") == null);
 }
 
 const TABLE =

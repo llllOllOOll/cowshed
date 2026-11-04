@@ -71,6 +71,10 @@ cowshed deploy
   Do not use it for a real release.
 - **The config and the secrets file** are read from this folder, committed or not: a change
   to `config/deploy.yml` counts at once.
+- **An app another tool ran before:** `replaces: <its container>` stops it once the first
+  deploy serves, and never removes it. When that tool puts the version in the name, end
+  with `*`: `replaces: my-app-web-*`. Its containers and images stay as they were, even
+  under the same service and image names, so going back to it is starting its container.
 
 ## Secrets
 

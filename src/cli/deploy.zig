@@ -138,7 +138,7 @@ pub fn run(arena: Allocator, io: std.Io, environ: *const std.process.Environ.Map
     const tag = try std.fmt.allocPrint(arena, "{s}:{s}", .{ config.image, version });
     try out.print("build: {s}\n", .{tag});
     try out.flush();
-    if (!try local.build(arena, io, config.builder, config.service, tag, build_folder)) {
+    if (!try local.build(arena, io, config.builder, config.service, config.image, version, build_folder)) {
         try out.writeAll("stopped: the image did not build\n");
         return false;
     }

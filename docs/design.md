@@ -104,7 +104,14 @@ how far along it is every 5 s.
 The same version deployed again takes a new name (`-2`), so the live route's name
 keeps meaning the running container. Uncommitted work (`--dirty`) is
 `<commit>-dirty-<time>`. Secrets: only those the config uses are expanded or run.
-`replaces: <container>` stops, and never removes, a container from before Cowshed.
+`replaces: <container>` stops, and never removes, a container from before Cowshed. One
+ending in `*` stops every running container whose name starts with what comes before it,
+for a tool that puts the version in the name; never the new one.
+
+The app's versions are the containers labelled `service=<service>` **and** `version`, and
+its images the same. Cowshed sets both; another tool may set `service` alone, on the same
+image name. Listing, pruning, removing and rolling back see only Cowshed's, so a tool's
+containers and images from before stay, and a way back to it with them.
 
 ## The proxy: Traefik through its file provider
 

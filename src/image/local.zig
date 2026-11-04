@@ -38,9 +38,11 @@ pub fn runBefore(arena: Allocator, io: Io, command: []const u8, image_version: [
     return term == .exited and term.exited == 0;
 }
 
-pub fn build(arena: Allocator, io: Io, builder: Config.Builder, service: []const u8, tag: []const u8, cwd: ?[]const u8) !bool {
+/// Labelled with the service and its version, which mark the image as Cowshed's.
+pub fn build(arena: Allocator, io: Io, builder: Config.Builder, service: []const u8, image: []const u8, version: []const u8, cwd: ?[]const u8) !bool {
     var argv: std.ArrayList([]const u8) = .empty;
-    try argv.appendSlice(arena, &.{ "docker", "build", "-t", tag, "--label", try std.fmt.allocPrint(arena, "service={s}", .{service}), "-f", builder.dockerfile });
+    const tag = try std.fmt.allocPrint(arena, "{s}:{s}", .{ image, version });
+    try argv.appendSlice(arena, &.{ "docker", "build", "-t", tag, "--label", try std.fmt.allocPrint(arena, "service={s}", .{service}), "--label", try std.fmt.allocPrint(arena, "version={s}", .{version}), "-f", builder.dockerfile });
     if (builder.arch) |arch| {
         try argv.appendSlice(arena, &.{ "--platform", try std.fmt.allocPrint(arena, "linux/{s}", .{arch}) });
     }

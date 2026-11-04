@@ -66,7 +66,7 @@ volumes:
   - /srv/e2e-data:/data
 deploy_timeout: 8
 drain_timeout: 3
-replaces: legacy
+replaces: legacy*
 YAML
 cat > "$APP/.cowshed/secrets" <<'SECRETS'
 TOKEN=$(printf 'hidden-token-value')
@@ -90,7 +90,7 @@ commit() {
 	git -C "$APP" commit -qm "$1"
 }
 serving() { curl -s -H 'Host: e2e.example' "http://127.0.0.1:$WEB_PORT/"; }
-live_containers() { inside docker ps --filter label=service=e2e --format '{{.Names}}' | sort | tr '\n' ' '; }
+live_containers() { inside docker ps --filter label=service=e2e --filter label=version --format '{{.Names}}' | sort | tr '\n' ' '; }
 
 echo "== setup"
 cowshed setup
@@ -104,8 +104,12 @@ echo uncommitted > "$APP/version.txt"
 echo new > "$APP/untracked.txt"
 echo hidden > "$APP/ignored.env"
 
-echo "== a first deploy, replacing a container from before, with only what is committed"
+echo "== a first deploy, replacing containers from before, with only what is committed"
 inside docker run -d --name legacy alpine sleep 600 >/dev/null
+# Another tool's version of the app: the service's label, no version label, the
+# version in its name, and its image of the same name.
+inside sh -c 'printf "FROM alpine\nLABEL service=e2e\n" | docker build -q -t e2e-app:abc123 - >/dev/null'
+inside docker run -d --name legacy-web-abc123 --label service=e2e --label role=web e2e-app:abc123 sleep 600 >/dev/null
 cowshed deploy | tee "$WORK/out" | grep -vE '^#|^$|^ *$' | cut -c1-120 | tail -12
 [ "$(serving)" = one ] || fail "not serving one: $(serving)"
 log=$(sed -n 's/^log: //p' "$WORK/out")
@@ -120,6 +124,8 @@ git -C "$APP" checkout -q -- version.txt
 rm "$APP/untracked.txt" "$APP/ignored.env"
 [ "$(inside docker inspect -f '{{.State.Running}}' legacy)" = false ] || fail "legacy still runs"
 inside docker inspect legacy >/dev/null || fail "legacy was removed"
+[ "$(inside docker inspect -f '{{.State.Running}}' legacy-web-abc123)" = false ] || fail "legacy-web-abc123 still runs"
+result versions | grep -q abc123 && fail "another tool's container listed as a version"
 grep -q "from outside\|did not answer" "$WORK/out" || fail "no look from outside"
 
 echo "== secrets: inside the container, nowhere else"
@@ -206,8 +212,10 @@ for v in five six seven eight; do
 	commit "$v"
 	cowshed deploy > "$WORK/out" || fail "deploy $v: $(tail -3 "$WORK/out")"
 done
-stopped=$(inside docker ps -a --filter label=service=e2e --filter status=exited -q | wc -l)
+stopped=$(inside docker ps -a --filter label=service=e2e --filter label=version --filter status=exited -q | wc -l)
 [ "$stopped" = 3 ] || fail "$stopped stopped containers"
+inside docker inspect legacy-web-abc123 >/dev/null || fail "prune removed another tool's container"
+inside docker image inspect e2e-app:abc123 >/dev/null || fail "prune removed another tool's image"
 [ "$(serving)" = eight ] || fail "not serving eight"
 inside sh -c 'cat /root/.cowshed/images/e2e/*.blobs | sort -u > /tmp/k; for f in /root/.cowshed/blobs/sha256/*; do grep -qx "${f##*/}" /tmp/k || echo stray; done' | grep -q stray && fail "stray blobs"
 inside sh -c 'for d in $(cat /root/.cowshed/images/e2e/*.blobs | sort -u); do test -e /root/.cowshed/blobs/sha256/$d || echo lost; done' | grep -q lost && fail "lost blobs"
@@ -245,7 +253,7 @@ grep -q "exit code 4" "$WORK/out" || fail "no exit code"
 echo "== prune by hand: what is live stays"
 cowshed prune | tail -1
 [ "$(serving)" = seven ] || fail "prune touched what is live"
-leftover=$(inside docker image ls --format '{{.Tag}}' e2e-app | while read -r tag; do
+leftover=$(inside docker image ls --filter label=version --format '{{.Tag}}' e2e-app | while read -r tag; do
 	inside docker ps -a --filter label=service=e2e --format '{{.Label "version"}}' | grep -qx "$tag" || echo "$tag"
 done)
 [ -z "$leftover" ] || fail "images of no container: $leftover"
@@ -295,9 +303,11 @@ echo "== remove: only with --yes"
 if cowshed remove > "$WORK/out"; then fail "removed without --yes"; fi
 [ "$(serving)" = seven ] || fail "removed without --yes"
 cowshed remove --yes | tail -1
-[ -z "$(inside docker ps -aq --filter label=service=e2e)" ] || fail "containers left"
-[ -z "$(inside docker image ls -q e2e-app)" ] || fail "images left"
+[ -z "$(inside docker ps -aq --filter label=service=e2e --filter label=version)" ] || fail "containers left"
+[ -z "$(inside docker image ls -q --filter label=version e2e-app)" ] || fail "images left"
 inside docker inspect legacy >/dev/null || fail "legacy was removed"
+inside docker inspect legacy-web-abc123 >/dev/null || fail "remove took another tool's container"
+inside docker image inspect e2e-app:abc123 >/dev/null || fail "remove took another tool's image"
 inside test -f /root/.cowshed/audit-e2e.log || fail "the audit log went too"
 
 echo "== env_file: for a deploy with no source first"
