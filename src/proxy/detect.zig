@@ -6,6 +6,7 @@ const Config = @import("../config/Config.zig");
 const Remote = @import("../remote/Remote.zig");
 const docker = @import("../docker/commands.zig");
 const traefik = @import("traefik.zig");
+const route = @import("route.zig");
 const yaml = @import("../config/yaml.zig");
 const Allocator = std.mem.Allocator;
 
@@ -36,6 +37,8 @@ pub const Traefik = struct {
     api: bool,
     /// Its HTTP entrypoint sends everything to HTTPS itself.
     http_redirects: bool = false,
+    /// The entrypoints of the config's `proxy.tcp`, in its order.
+    tcp: []const route.Tcp = &.{},
 };
 
 pub const Outcome = union(enum) {
@@ -111,6 +114,13 @@ fn read(arena: Allocator, remote: Remote, proxy: Config.Proxy, start: Traefik) R
             return stopped(arena, "the config has `proxy.ssl_redirect: false`, and Traefik `{s}` sends all of `{s}` to HTTPS itself (`entrypoints.{s}.http.redirections`): plain HTTP cannot reach the app. Removing that is the server owner's change, and restarts Traefik", .{ name, http, http });
         }
     }
+    var tcp: std.ArrayList(route.Tcp) = .empty;
+    for (proxy.tcp) |port| {
+        const entrypoint = flags.entrypointOn(port) orelse {
+            return stopped(arena, "the config has `proxy.tcp` {d}, and Traefik `{s}` has no entrypoint on it. Adding one changes Traefik's own settings and restarts it, cutting every app it serves: the server owner's change", .{ port, name });
+        };
+        try tcp.append(arena, .{ .entrypoint = entrypoint, .port = port });
+    }
     const network = flags.docker_network orelse firstWord(networks);
     if (network.len == 0) return stopped(arena, "Traefik `{s}` is on no network", .{name});
 
@@ -122,6 +132,7 @@ fn read(arena: Allocator, remote: Remote, proxy: Config.Proxy, start: Traefik) R
     found.resolver = flags.resolver;
     found.api = flags.api;
     found.http_redirects = flags.http_redirects;
+    found.tcp = tcp.items;
     return .{ .traefik = found };
 }
 

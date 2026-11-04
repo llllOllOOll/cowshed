@@ -45,6 +45,9 @@ pub const Proxy = struct {
     health: Health = .{},
     /// Only when `cowshed setup` installs Traefik: Let's Encrypt asks for it.
     acme_email: ?[]const u8 = null,
+    /// Raw TCP ports, the same inside and out, each through an entrypoint of
+    /// Traefik's own: one app a port, as nothing tells apps apart without TLS.
+    tcp: []const u16 = &.{},
 };
 
 pub const Ssh = struct {
@@ -238,6 +241,27 @@ const Reader = struct {
         return out.items;
     }
 
+    /// TCP ports: numbers, each once, and not HTTP's own 80 and 443.
+    fn ports(self: *Reader, parent: yaml.Value, key: []const u8, path: []const u8) Allocator.Error![]const u16 {
+        const texts = try self.strings(parent, key, path);
+        const entry = parent.get(key) orelse return &.{};
+        var out: std.ArrayList(u16) = .empty;
+        for (texts, 0..) |text, i| {
+            const line = if (entry.value == .list and i < entry.value.list.len) entry.value.list[i].line else entry.line;
+            const port = std.fmt.parseInt(u16, text, 10) catch 0;
+            if (port == 0) {
+                try self.problem(line, "`{s}.{s}` holds port numbers: `{s}`", .{ path, key, text });
+            } else if (port == 80 or port == 443) {
+                try self.problem(line, "`{s}.{s}`: {d} is HTTP's own", .{ path, key, port });
+            } else if (std.mem.indexOfScalar(u16, out.items, port) != null) {
+                try self.problem(line, "`{s}.{s}` names {d} twice", .{ path, key, port });
+            } else {
+                try out.append(self.arena, port);
+            }
+        }
+        return out.items;
+    }
+
     fn pairs(self: *Reader, value: yaml.Value, line: u32, path: []const u8) Allocator.Error![]const Pair {
         if (value == .none) return &.{};
         if (value != .map) {
@@ -297,7 +321,7 @@ const Reader = struct {
         const entry = parent.get("proxy") orelse return null;
         const value = entry.value;
         const proxy_path = try std.fmt.allocPrint(self.arena, "{s}proxy", .{path});
-        try self.checkKeys(value, entry.line, proxy_path, &.{ "host", "app_port", "ssl", "ssl_redirect", "forward_headers", "healthcheck", "acme_email" });
+        try self.checkKeys(value, entry.line, proxy_path, &.{ "host", "app_port", "ssl", "ssl_redirect", "forward_headers", "healthcheck", "acme_email", "tcp" });
         var proxy: Proxy = .{
             .host = try self.required(value, "host", proxy_path, entry.line),
             .app_port = try self.number(u16, value, "app_port", proxy_path, DEFAULT_APP_PORT),
@@ -305,6 +329,7 @@ const Reader = struct {
             .ssl_redirect = (try self.boolean(value, "ssl_redirect", proxy_path)) orelse true,
             .forward_headers = try self.boolean(value, "forward_headers", proxy_path),
             .acme_email = try self.string(value, "acme_email", proxy_path),
+            .tcp = try self.ports(value, "tcp", proxy_path),
         };
         if (value.get("healthcheck")) |health| {
             const health_path = try std.fmt.allocPrint(self.arena, "{s}.healthcheck", .{proxy_path});
@@ -781,6 +806,21 @@ test "an accessory" {
     try testing.expectEqualStrings("POSTGRES_PASSWORD", db.env.secret[0]);
     try testing.expectEqualStrings("db.example", db.proxy.?.host);
     try testing.expect(db.networks == null);
+}
+
+test "raw TCP ports" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var problems: std.ArrayList(Problem) = .empty;
+    const config = try parse(arena.allocator(), MINIMAL ++ "proxy:\n  host: a\n  tcp:\n    - 60005\n    - 1883\n", &problems);
+    try testing.expectEqual(@as(u16, 60005), config.proxy.?.tcp[0]);
+    try testing.expectEqual(@as(u16, 1883), config.proxy.?.tcp[1]);
+    const base = MINIMAL ++ "proxy:\n  host: a\n  tcp:\n";
+    try expectProblem(base ++ "    - x\n", "`proxy.tcp` holds port numbers: `x`");
+    try expectProblem(base ++ "    - 0\n", "`proxy.tcp` holds port numbers: `0`");
+    try expectProblem(base ++ "    - 70000\n", "`proxy.tcp` holds port numbers: `70000`");
+    try expectProblem(base ++ "    - 443\n", "`proxy.tcp`: 443 is HTTP's own");
+    try expectProblem(base ++ "    - 9\n    - 9\n", "`proxy.tcp` names 9 twice");
 }
 
 test "an accessory's host is the app's or none, and its lists are checked" {

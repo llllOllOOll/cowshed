@@ -155,6 +155,15 @@ version keeps serving until the new one is proven, but it shares these: its file
 untouched only as far as the new version leaves them so. What they hold is the owner's,
 so no command removes it.
 
+## Raw TCP
+
+`proxy.tcp` ports go in the same route file, under `tcp:`: a router with
+`HostSNI(\`*\`)` on the entrypoint listening on the port, to `<container>:<port>`. A
+switch is still one rename, both kinds at once, and is confirmed for each service by the
+API. Draining counts established connections on every routed port. The entrypoints
+belong to Traefik's static settings: the Traefik `setup` starts has one a port
+(`tcp-<port>`), and a Traefik found without one is refused by name, never restarted.
+
 ## Networks
 
 The app joins Traefik's network, then the project's own (`networks`), all in its `docker

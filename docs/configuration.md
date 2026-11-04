@@ -24,6 +24,8 @@ proxy:                    # Optional: without it there is no route
   ssl: true               # HTTPS, with a certificate from Traefik's resolver
   ssl_redirect: true      # HTTP goes to HTTPS, by default; false: HTTP reaches the app too
   acme_email: me@example.com  # Needed when `setup` installs Traefik, with ssl
+  tcp:                    # Optional: raw TCP ports, the same inside and out
+    - 60005
   healthcheck:
     path: /up             # By default; must answer 2xx
     interval: 1           # Seconds between tries
@@ -90,6 +92,18 @@ accessories:              # Optional: long-lived containers beside the app
 A list of hosts can stand directly under `servers`, and a plain map under `env` is all
 clear variables. `registry`, `boot` and `proxy.forward_headers` are read and ignored, with
 a notice: Traefik sets the forwarding headers.
+
+## Raw TCP
+
+`proxy.tcp` lists ports that are not HTTP, such as a device's socket. Each reaches the
+same port of the live version through an entrypoint of Traefik's own, switched with the
+HTTP route in the same deploy, confirmed by Traefik's API, and drained like it:
+connections already open stay with the old version until `drain_timeout`, then end, and
+their clients must connect again. Without TLS nothing tells apps apart, so a port serves
+one app. The Traefik `setup` installs gets an entrypoint and a published port for each.
+A Traefik already there must have one listening on the port: an entrypoint is part of
+Traefik's own settings, and adding one restarts it, so `setup` and `deploy` stop and
+name the port instead. 80 and 443 are HTTP's.
 
 ## Plain HTTP beside HTTPS
 

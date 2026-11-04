@@ -1,6 +1,7 @@
-"""The app the end-to-end test deploys: HTTP saying its version, and a WebSocket
-sending it, until closed. `BROKEN` in its version file makes its health fail."""
-import base64, hashlib, http.server, pathlib, signal, socketserver, sys, time
+"""The app the end-to-end test deploys: HTTP saying its version, a WebSocket
+sending it, until closed, and raw TCP doing the same. `BROKEN` in its version
+file makes its health fail."""
+import base64, hashlib, http.server, pathlib, signal, socketserver, sys, threading, time
 
 VERSION = pathlib.Path("/app/version.txt").read_text().strip()
 SSE_SILENCE_S = 5
@@ -68,5 +69,24 @@ class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
     daemon_threads = True
 
 
+class Raw(socketserver.BaseRequestHandler):
+    """Raw TCP on 9000, as a device keeps a socket open: its version, then a line
+    every 0.2 s until the client or this version goes."""
+
+    def handle(self):
+        try:
+            while True:
+                self.request.sendall(VERSION.encode() + b"\n")
+                time.sleep(0.2)
+        except OSError:
+            pass
+
+
+class RawServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+
 signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+threading.Thread(target=RawServer(("0.0.0.0", 9000), Raw).serve_forever, daemon=True).start()
 Server(("0.0.0.0", 8000), Handler).serve_forever()

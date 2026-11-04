@@ -15,7 +15,14 @@ pub const PRIVATE_API_ADDRESS = "127.0.0.1:8080";
 const OWN_ROUTES_MOUNT = "/etc/traefik/routes";
 const OWN_ACME_MOUNT = "/etc/letsencrypt";
 
+/// More than a server's Traefik has in practice; beyond it, the rest go unseen.
+pub const MAX_ENTRYPOINTS = 16;
+pub const Entrypoint = struct { name: []const u8, port: u16 };
+
 pub const Flags = struct {
+    /// Every TCP entrypoint, by the port it listens on.
+    entrypoints: [MAX_ENTRYPOINTS]Entrypoint = undefined,
+    entrypoint_count: usize = 0,
     http_entrypoint: ?[]const u8 = null,
     https_entrypoint: ?[]const u8 = null,
     /// The HTTP entrypoint sends everything to HTTPS itself
@@ -38,9 +45,24 @@ pub const Flags = struct {
     }
 
     fn addEntrypoint(self: *Flags, name: []const u8, address: []const u8) void {
+        // UDP shares no port with TCP's routers.
+        if (std.mem.endsWith(u8, address, "/udp")) return;
         const bare = if (std.mem.endsWith(u8, address, "/tcp")) address[0 .. address.len - 4] else address;
         if (std.mem.endsWith(u8, bare, ":80")) self.http_entrypoint = name;
         if (std.mem.endsWith(u8, bare, ":443")) self.https_entrypoint = name;
+        const colon = std.mem.lastIndexOfScalar(u8, bare, ':') orelse return;
+        const port = std.fmt.parseInt(u16, bare[colon + 1 ..], 10) catch return;
+        if (self.entrypoint_count == MAX_ENTRYPOINTS) return;
+        self.entrypoints[self.entrypoint_count] = .{ .name = name, .port = port };
+        self.entrypoint_count += 1;
+    }
+
+    /// The entrypoint listening on this TCP port, if any.
+    pub fn entrypointOn(self: Flags, port: u16) ?[]const u8 {
+        for (self.entrypoints[0..self.entrypoint_count]) |entrypoint| {
+            if (entrypoint.port == port) return entrypoint.name;
+        }
+        return null;
     }
 };
 
@@ -183,21 +205,37 @@ pub fn listensOn(listing: []const u8, port: u16) bool {
 
 /// `routes` and `acme` are folders on the server. Without an email it has no
 /// certificates: an app on `ssl: true` needs one, which `setup` checks first.
-pub fn ownRunCommand(arena: Allocator, routes: []const u8, acme: []const u8, acme_email: ?[]const u8) Allocator.Error![]const []const u8 {
+/// The entrypoint our own Traefik has for a raw TCP port.
+pub fn ownTcpEntrypoint(arena: Allocator, port: u16) Allocator.Error![]const u8 {
+    return std.fmt.allocPrint(arena, "tcp-{d}", .{port});
+}
+
+/// With `tcp`, an entrypoint and a published port for each.
+pub fn ownRunCommand(arena: Allocator, routes: []const u8, acme: []const u8, acme_email: ?[]const u8, tcp: []const u16) Allocator.Error![]const []const u8 {
     var argv: std.ArrayList([]const u8) = .empty;
     try argv.appendSlice(arena, &.{
-        "docker",                                                "run",                                                               "-d",
-        "--name",                                                OWN_NAME,                                                            "--restart",
-        "unless-stopped",                                        "--network",                                                         OWN_NETWORK,
-        "-p",                                                    "80:80",                                                             "-p",
-        "443:443",                                               "-v",                                                                try std.fmt.allocPrint(arena, "{s}:{s}", .{ routes, OWN_ROUTES_MOUNT }),
-        "-v",                                                    try std.fmt.allocPrint(arena, "{s}:{s}", .{ acme, OWN_ACME_MOUNT }), OWN_IMAGE,
-        "--global.checkNewVersion=false",                        "--global.sendAnonymousUsage=false",
+        "docker",         "run",                                                               "-d",
+        "--name",         OWN_NAME,                                                            "--restart",
+        "unless-stopped", "--network",                                                         OWN_NETWORK,
+        "-p",             "80:80",                                                             "-p",
+        "443:443",        "-v",                                                                try std.fmt.allocPrint(arena, "{s}:{s}", .{ routes, OWN_ROUTES_MOUNT }),
+        "-v",             try std.fmt.allocPrint(arena, "{s}:{s}", .{ acme, OWN_ACME_MOUNT }),
+    });
+    for (tcp) |port| try argv.appendSlice(arena, &.{ "-p", try std.fmt.allocPrint(arena, "{d}:{d}", .{ port, port }) });
+    try argv.appendSlice(arena, &.{
+        OWN_IMAGE,
+        "--global.checkNewVersion=false",
+        "--global.sendAnonymousUsage=false",
         // Its API answers only inside its own container: no neighbour reads it.
-                                        "--api.insecure=true",
-        "--entrypoints.traefik.address=" ++ PRIVATE_API_ADDRESS, "--entrypoints.web.address=:80",                                     "--entrypoints.websecure.address=:443",
+        "--api.insecure=true",
+        "--entrypoints.traefik.address=" ++ PRIVATE_API_ADDRESS,
+        "--entrypoints.web.address=:80",
+        "--entrypoints.websecure.address=:443",
         "--providers.file.directory=" ++ OWN_ROUTES_MOUNT,
     });
+    for (tcp) |port| {
+        try argv.append(arena, try std.fmt.allocPrint(arena, "--entrypoints.{s}.address=:{d}", .{ try ownTcpEntrypoint(arena, port), port }));
+    }
     if (acme_email) |email| {
         const prefix = "--certificatesresolvers." ++ OWN_RESOLVER ++ ".acme.";
         try argv.appendSlice(arena, &.{
@@ -367,8 +405,8 @@ test "our own Traefik: pinned, without the Docker socket, and with a resolver on
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const bare = try ownRunCommand(a, "/r", "/a", null);
-    const with_email = try ownRunCommand(a, "/r", "/a", "me@x");
+    const bare = try ownRunCommand(a, "/r", "/a", null, &.{});
+    const with_email = try ownRunCommand(a, "/r", "/a", "me@x", &.{});
     const line = try std.mem.join(a, " ", with_email);
     try testing.expect(std.mem.indexOf(u8, line, "traefik:3.6.6") != null);
     try testing.expect(std.mem.indexOf(u8, line, "docker.sock") == null);
@@ -377,4 +415,33 @@ test "our own Traefik: pinned, without the Docker socket, and with a resolver on
     const flags = parseFlags(with_email);
     try testing.expectEqualStrings("letsencrypt", flags.resolver.?);
     try testing.expect(parseFlags(bare).resolver == null);
+}
+
+test "our own Traefik with raw TCP ports: published, and an entrypoint each that we then find" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const argv = try ownRunCommand(a, "/r", "/a", null, &.{ 60005, 1883 });
+    const line = try std.mem.join(a, " ", argv);
+    try testing.expect(std.mem.indexOf(u8, line, "-p 60005:60005 -p 1883:1883 traefik:3.6.6") != null);
+    const flags = parseFlags(argv);
+    try testing.expectEqualStrings("tcp-60005", flags.entrypointOn(60005).?);
+    try testing.expectEqualStrings("tcp-1883", flags.entrypointOn(1883).?);
+    try testing.expectEqualStrings("web", flags.entrypointOn(80).?);
+    try testing.expect(flags.entrypointOn(9) == null);
+}
+
+test "entrypoints by port, from flags and a settings file; UDP is not one" {
+    const flags = parseFlags(&.{ "--entrypoints.autocgi.address=:60005", "--entrypoints.call.address=:5060/udp", "--entrypoints.sip.address=0.0.0.0:5061/tcp" });
+    try testing.expectEqualStrings("autocgi", flags.entrypointOn(60005).?);
+    try testing.expectEqualStrings("sip", flags.entrypointOn(5061).?);
+    try testing.expect(flags.entrypointOn(5060) == null);
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const from_file = try settings(&arena,
+        \\entryPoints:
+        \\  autocgi:
+        \\    address: ":60005"
+    );
+    try testing.expectEqualStrings("autocgi", from_file.entrypointOn(60005).?);
 }

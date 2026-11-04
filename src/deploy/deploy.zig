@@ -451,7 +451,13 @@ fn retireOld(self: Run, new_name: []const u8) Error!void {
         return;
     }
 
-    if (config.proxy) |proxy| try drain(self, old.items, proxy.app_port);
+    if (config.proxy) |proxy| {
+        // HTTP's and each raw TCP port's connections alike.
+        var ports: std.ArrayList(u16) = .empty;
+        try ports.append(self.arena, proxy.app_port);
+        try ports.appendSlice(self.arena, proxy.tcp);
+        try drain(self, old.items, ports.items);
+    }
     for (old.items) |name| {
         try self.say("old: stopping {s}", .{name});
         const stopped = try self.ask(try docker.stop(self.arena, name));
@@ -465,12 +471,12 @@ fn retireOld(self: Run, new_name: []const u8) Error!void {
 
 /// Until no connection is left or `drain_timeout` passes. A WebSocket stays open
 /// until then, and the stop cuts it.
-fn drain(self: Run, names: []const []const u8, port: u16) Error!void {
+fn drain(self: Run, names: []const []const u8, ports: []const u16) Error!void {
     var waited: u32 = 0;
     const limit = self.config().drain_timeout_s;
     while (waited < limit) : (waited += 1) {
         var open: usize = 0;
-        for (names) |name| open += try connectionsOf(self, name, port);
+        for (names) |name| open += try connectionsOf(self, name, ports);
         if (open == 0) {
             try self.say("drain: no connections left", .{});
             return;
@@ -485,12 +491,14 @@ fn drain(self: Run, names: []const []const u8, port: u16) Error!void {
     try self.say("drain: time is up, stopping what remains", .{});
 }
 
-fn connectionsOf(self: Run, name: []const u8, port: u16) Error!usize {
+fn connectionsOf(self: Run, name: []const u8, ports: []const u16) Error!usize {
     const pid = try self.ask(try docker.pid(self.arena, name));
     if (!pid.ok()) return 0;
     const text = std.mem.trimEnd(u8, pid.stdout, "\r\n");
     const table = try self.ask(&.{ "sh", "-c", READ_CONNECTIONS, "sh", text });
-    return countEstablished(table.stdout, port);
+    var count: usize = 0;
+    for (ports) |port| count += countEstablished(table.stdout, port);
+    return count;
 }
 
 fn countEstablished(table: []const u8, port: u16) usize {
@@ -1121,6 +1129,47 @@ test "draining waits for its time, then stops the old" {
     try h.says("drain: 2 open");
     try h.says("time is up");
     try testing.expect(h.fake.ran("docker stop app-web-v1"));
+}
+
+const INSPECT_TCP =
+    \\null
+    \\["--api.insecure=true","--entrypoints.web.address=:80","--entrypoints.autocgi.address=:60005","--providers.file.directory=/routes"]
+    \\public 
+    \\
+;
+/// One connection established on 60005 (0xEA65), none on HTTP's port.
+const TCP_TABLE =
+    \\  sl  local_address rem_address   st tx_queue
+    \\   0: 0100007F:EA65 0200007F:9C40 01 0
+;
+
+test "raw TCP: its route beside HTTP's, confirmed by the API, and its connections drained" {
+    var h = harness();
+    defer h.arena.deinit();
+    try h.begin();
+    try h.on("docker inspect --format {{json", 0, INSPECT_TCP);
+    try h.on("/proc/$1/net/tcp", 0, TCP_TABLE);
+    var config = PROXIED;
+    config.proxy.?.tcp = &.{60005};
+    try testing.expect(try h.deploy(config));
+    const written = h.fake.calls.items[h.fake.position("cat > \"$1/.$2.tmp\"").?].stdin.?;
+    try testing.expect(std.mem.indexOf(u8, written, "cowshed-app-tcp-60005:") != null);
+    try testing.expect(std.mem.indexOf(u8, written, "- autocgi") != null);
+    try testing.expect(std.mem.indexOf(u8, written, "address: \"app-web-v2:60005\"") != null);
+    try testing.expect(h.fake.ran("wget -qO- http://127.0.0.1:8080/api/tcp/services/cowshed-app-tcp-60005@file"));
+    try h.says("drain: 1 open");
+}
+
+test "raw TCP with no entrypoint on its port: stopped before anything starts, Traefik untouched" {
+    var h = harness();
+    defer h.arena.deinit();
+    try h.begin();
+    var config = PROXIED;
+    config.proxy.?.tcp = &.{60005};
+    try testing.expect(!try h.deploy(config));
+    try h.says("`proxy.tcp` 60005, and Traefik `traefik` has no entrypoint on it");
+    try testing.expect(!h.fake.ran("docker run"));
+    try testing.expect(!h.fake.ran("cat > \"$1/.$2.tmp\""));
 }
 
 test "a container that cannot be stopped is told, the deploy is done" {

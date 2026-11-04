@@ -10,6 +10,9 @@ const PRIORITY = 1000;
 /// about 95 s, and draining could not tell them from real ones.
 const IDLE_TIMEOUT = "3s";
 
+/// A raw TCP port and the entrypoint Traefik receives it on.
+pub const Tcp = struct { entrypoint: []const u8, port: u16 };
+
 pub const Route = struct {
     service: []const u8,
     host: []const u8,
@@ -22,6 +25,8 @@ pub const Route = struct {
     /// with `redirect` off, reaching the app as plain HTTP.
     http_from: ?[]const u8 = null,
     redirect: bool = true,
+    /// Raw TCP, each port to the same port of the container.
+    tcp: []const Tcp = &.{},
 };
 
 pub fn fileName(arena: Allocator, service: []const u8) Allocator.Error![]const u8 {
@@ -102,6 +107,34 @@ fn renderTo(w: *std.Io.Writer, route: Route) std.Io.Writer.Error!void {
         \\        idleConnTimeout: {s}
         \\
     , .{ name, name, route.container, route.port, name, IDLE_TIMEOUT });
+    if (route.tcp.len == 0) return;
+    // Without TLS nothing tells hosts apart: `*` takes all of the entrypoint.
+    try w.writeAll("tcp:\n  routers:\n");
+    for (route.tcp) |tcp| {
+        try w.print(
+            \\    cowshed-{s}-tcp-{d}:
+            \\      rule: "HostSNI(`*`)"
+            \\      entryPoints:
+            \\        - {s}
+            \\      service: cowshed-{s}-tcp-{d}
+            \\
+        , .{ name, tcp.port, tcp.entrypoint, name, tcp.port });
+    }
+    try w.writeAll("  services:\n");
+    for (route.tcp) |tcp| {
+        try w.print(
+            \\    cowshed-{s}-tcp-{d}:
+            \\      loadBalancer:
+            \\        servers:
+            \\          - address: "{s}:{d}"
+            \\
+        , .{ name, tcp.port, route.container, tcp.port });
+    }
+}
+
+/// The TCP service of a port, as Traefik's API names it without `@file`.
+pub fn tcpServiceName(arena: Allocator, service: []const u8, port: u16) Allocator.Error![]const u8 {
+    return std.fmt.allocPrint(arena, "cowshed-{s}-tcp-{d}", .{ service, port });
 }
 
 const testing = std.testing;
@@ -154,4 +187,24 @@ test "with TLS and plain HTTP to the app as well" {
     try testing.expect(plain.get("middlewares") == null);
     try testing.expect(plain.get("tls") == null);
     try testing.expect(http.get("middlewares") == null);
+}
+
+test "raw TCP: a router and a service a port, to the same port of the container" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const text = try render(a, .{ .service = "s", .host = "h", .container = "s-web-2", .port = 3000, .entrypoint = "web", .tcp = &.{ .{ .entrypoint = "autocgi", .port = 60005 }, .{ .entrypoint = "mqtt", .port = 1883 } } });
+    var failure: yaml.Failure = undefined;
+    const root = try yaml.parse(a, text, &failure);
+    try testing.expect(root.get("http") != null);
+    const tcp = root.get("tcp").?.value;
+    const router = tcp.get("routers").?.value.get("cowshed-s-tcp-60005").?.value;
+    try testing.expectEqualStrings("HostSNI(`*`)", router.get("rule").?.value.scalar);
+    try testing.expectEqualStrings("autocgi", router.get("entryPoints").?.value.list[0].value.scalar);
+    try testing.expectEqualStrings("cowshed-s-tcp-60005", router.get("service").?.value.scalar);
+    const balancer = tcp.get("services").?.value.get("cowshed-s-tcp-1883").?.value.get("loadBalancer").?.value;
+    try testing.expectEqualStrings("s-web-2:1883", balancer.get("servers").?.value.list[0].value.get("address").?.value.scalar);
+    // Without ports, no TCP at all.
+    const plain = try render(a, .{ .service = "s", .host = "h", .container = "c", .port = 1, .entrypoint = "web" });
+    try testing.expect((try yaml.parse(a, plain, &failure)).get("tcp") == null);
 }

@@ -24,7 +24,9 @@ screen.
 missing (needs root or sudo without a password), `~/.cowshed`, and Traefik if none
 runs. It uses a Traefik already there, set up by flags or a YAML settings file, and
 changes nothing that exists. It stops, saying why, at anything that would touch other
-apps, such as a Traefik with no routes folder: `cowshed proxy adopt` gives it one. `--dry-run` says what it would do.
+apps, such as a Traefik with no routes folder: `cowshed proxy adopt` gives it one, or
+with no entrypoint on a `proxy.tcp` port. The Traefik it starts listens on 80, 443 and
+those ports. `--dry-run` says what it would do.
 
 **`cowshed proxy adopt [--yes]`** gives a working Traefik a routes folder. Alone it says
 what it would change, and changes nothing. With `--yes` it backs up the settings, the

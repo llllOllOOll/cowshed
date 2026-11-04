@@ -161,9 +161,14 @@ fn ensureOwn(self: Run, home: []const u8) Error!bool {
         return self.stop("there is no Traefik here, and certificates from Let's Encrypt need an email: set `proxy.acme_email`", .{});
     }
 
+    const tcp = try tcpPorts(self.arena, self.config);
+    var wanted: std.ArrayList(u16) = .empty;
+    try wanted.appendSlice(self.arena, &.{ 80, 443 });
+    try wanted.appendSlice(self.arena, tcp);
+    const ports = try portsText(self.arena, wanted.items);
     const listening = try self.shell(LISTENING);
     if (listening.ok()) {
-        for ([_]u16{ 80, 443 }) |port| {
+        for (wanted.items) |port| {
             if (traefik.listensOn(listening.stdout, port)) {
                 return self.stop("something other than Traefik listens on port {d} (nginx? Caddy?). Cowshed will not touch it", .{port});
             }
@@ -173,7 +178,7 @@ fn ensureOwn(self: Run, home: []const u8) Error!bool {
     }
 
     if (self.options.dry_run) {
-        try self.out.print("traefik: none here, would start `{s}` ({s}) on 80 and 443, network {s}\n", .{ traefik.OWN_NAME, traefik.OWN_IMAGE, traefik.OWN_NETWORK });
+        try self.out.print("traefik: none here, would start `{s}` ({s}) on {s}, network {s}\n", .{ traefik.OWN_NAME, traefik.OWN_IMAGE, ports, traefik.OWN_NETWORK });
         return true;
     }
 
@@ -184,14 +189,40 @@ fn ensureOwn(self: Run, home: []const u8) Error!bool {
     const routes = try std.fmt.allocPrint(self.arena, "{s}/.cowshed/traefik/routes", .{home});
     const acme = try std.fmt.allocPrint(self.arena, "{s}/.cowshed/traefik/acme", .{home});
     try self.out.print("traefik: none here, starting `{s}` ({s}); a first download can take a while\n", .{ traefik.OWN_NAME, traefik.OWN_IMAGE });
-    const ran = try self.ask(try traefik.ownRunCommand(self.arena, routes, acme, proxy.acme_email));
+    const ran = try self.ask(try traefik.ownRunCommand(self.arena, routes, acme, proxy.acme_email, tcp));
     if (!ran.ok()) {
         // A failed `docker run` leaves its container behind, on a port it never got.
         _ = try self.ask(try docker.remove(self.arena, traefik.OWN_NAME));
         return self.stop("could not start Traefik: {s}", .{Run.lastLine(ran.stderr)});
     }
-    try self.out.print("traefik: started `{s}` ({s}) on 80 and 443, network {s}\n", .{ traefik.OWN_NAME, traefik.OWN_IMAGE, traefik.OWN_NETWORK });
+    try self.out.print("traefik: started `{s}` ({s}) on {s}, network {s}\n", .{ traefik.OWN_NAME, traefik.OWN_IMAGE, ports, traefik.OWN_NETWORK });
     return true;
+}
+
+/// The raw TCP ports the app and its accessories route, each once.
+fn tcpPorts(arena: Allocator, config: Config) Allocator.Error![]const u16 {
+    var ports: std.ArrayList(u16) = .empty;
+    var proxies: std.ArrayList(Config.Proxy) = .empty;
+    if (config.proxy) |proxy| try proxies.append(arena, proxy);
+    for (config.accessories) |accessory| {
+        if (accessory.proxy) |proxy| try proxies.append(arena, proxy);
+    }
+    for (proxies.items) |proxy| {
+        for (proxy.tcp) |port| {
+            if (std.mem.indexOfScalar(u16, ports.items, port) == null) try ports.append(arena, port);
+        }
+    }
+    return ports.items;
+}
+
+/// `80, 443 and 60005`.
+fn portsText(arena: Allocator, ports: []const u16) Allocator.Error![]const u8 {
+    var text: std.ArrayList(u8) = .empty;
+    for (ports, 0..) |port, i| {
+        if (i > 0) try text.appendSlice(arena, if (i == ports.len - 1) " and " else ", ");
+        try text.print(arena, "{d}", .{port});
+    }
+    return text.items;
 }
 
 const testing = std.testing;
@@ -459,6 +490,33 @@ test "an accessory's route needs Traefik too, when the app has none" {
     try testing.expect(try run(h.arena.allocator(), h.fake.remote(), &h.output.writer, config, .{}));
     try testing.expect(h.fake.ran("docker run"));
     try h.says("traefik: started");
+}
+
+test "a new server with raw TCP ports: our Traefik publishes them, if nothing else holds them" {
+    {
+        var h = Harness.create();
+        defer h.deinit();
+        h.start();
+        try newServer(&h);
+        var proxy = PROXY;
+        proxy.tcp = &.{60005};
+        try testing.expect(try h.setup(proxy, .{}));
+        try testing.expect(h.fake.ran("-p 60005:60005"));
+        try testing.expect(h.fake.ran("--entrypoints.tcp-60005.address=:60005"));
+        try h.says("on 80, 443 and 60005");
+    }
+    {
+        var h = Harness.create();
+        defer h.deinit();
+        h.start();
+        try newServer(&h);
+        try h.on("ss -ltn", 0, "LISTEN 0 1 0.0.0.0:60005 0.0.0.0:*\n");
+        var proxy = PROXY;
+        proxy.tcp = &.{60005};
+        try testing.expect(!try h.setup(proxy, .{}));
+        try h.says("listens on port 60005");
+        try testing.expect(!h.fake.ran("docker run"));
+    }
 }
 
 test "two Traefiks, and another program on the ports, stop it" {
