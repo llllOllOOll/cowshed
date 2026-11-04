@@ -309,6 +309,7 @@ leaves the old version serving.
 | `the image did not build` | Build it from what is committed. A missing file is often one git ignores: commit it, or have the build fetch it |
 | `` `builder.before` failed`` | It runs in the clean copy: it cannot see files that exist only in this folder |
 | `no Traefik runs on this server` | `cowshed setup` |
+| `sends all of ... to HTTPS itself` | `ssl_redirect: false` needs plain HTTP, and that Traefik redirects first. Its owner can remove the redirection, with a restart; or keep the redirect |
 | `Traefik did not take the new route` | Read what the message says: a broken file in the routes folder blocks every change there |
 | `the apps did not come back as they were` | Everything was put back. Read which app it names, and find out why before trying again |
 | `RESTORE FAILED` | Urgent: Traefik may be down. Call the server owner at once. See [Adopting a Traefik](#adopting-a-traefik) |

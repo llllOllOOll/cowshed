@@ -22,7 +22,7 @@ proxy:                    # Optional: without it there is no route
   host: app.example.com
   app_port: 8000          # 80 by default
   ssl: true               # HTTPS, with a certificate from Traefik's resolver
-  ssl_redirect: true      # HTTP goes to HTTPS, by default
+  ssl_redirect: true      # HTTP goes to HTTPS, by default; false: HTTP reaches the app too
   acme_email: me@example.com  # Needed when `setup` installs Traefik, with ssl
   healthcheck:
     path: /up             # By default; must answer 2xx
@@ -63,6 +63,15 @@ replaces: old-container   # Optional: from before Cowshed; stopped, never remove
 A list of hosts can stand directly under `servers`, and a plain map under `env` is all
 clear variables. `registry`, `boot` and `proxy.forward_headers` are read and ignored, with
 a notice: Traefik sets the forwarding headers.
+
+## Plain HTTP beside HTTPS
+
+With `ssl: true`, HTTP redirects to HTTPS. `ssl_redirect: false` lets HTTP reach the app as
+well, for devices or callers that cannot speak HTTPS; the app then decides what to redirect, by
+the `X-Forwarded-Proto` that Traefik sets. A Traefik whose HTTP entrypoint sends everything to
+HTTPS itself (`entrypoints.<it>.http.redirections`) does so before any route, so `setup` and
+`deploy` stop there and say so: removing that setting is the server owner's change, and
+restarts Traefik. The Traefik `setup` installs has no such setting.
 
 ## Volumes
 

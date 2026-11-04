@@ -18,8 +18,10 @@ pub const Route = struct {
     /// Where it answers: the HTTPS entrypoint when `resolver` is set, else HTTP.
     entrypoint: []const u8,
     resolver: ?[]const u8 = null,
-    /// When set, HTTP on this entrypoint redirects to HTTPS.
-    redirect_from: ?[]const u8 = null,
+    /// With TLS, the HTTP entrypoint answering too: redirecting to HTTPS, or
+    /// with `redirect` off, reaching the app as plain HTTP.
+    http_from: ?[]const u8 = null,
+    redirect: bool = true,
 };
 
 pub fn fileName(arena: Allocator, service: []const u8) Allocator.Error![]const u8 {
@@ -56,23 +58,36 @@ fn renderTo(w: *std.Io.Writer, route: Route) std.Io.Writer.Error!void {
             \\
         , .{resolver});
     }
-    if (route.redirect_from) |entrypoint| {
+    if (route.http_from) |entrypoint| {
         try w.print(
-            \\    cowshed-{s}-redirect:
+            \\    cowshed-{s}-http:
             \\      rule: "Host(`{s}`)"
             \\      entryPoints:
             \\        - {s}
-            \\      middlewares:
-            \\        - cowshed-{s}-redirect
+            \\
+        , .{ name, route.host, entrypoint });
+        if (route.redirect) {
+            try w.print(
+                \\      middlewares:
+                \\        - cowshed-{s}-redirect
+                \\
+            , .{name});
+        }
+        try w.print(
             \\      service: cowshed-{s}
             \\      priority: {d}
-            \\  middlewares:
-            \\    cowshed-{s}-redirect:
-            \\      redirectScheme:
-            \\        scheme: https
-            \\        permanent: true
             \\
-        , .{ name, route.host, entrypoint, name, name, PRIORITY, name });
+        , .{ name, PRIORITY });
+        if (route.redirect) {
+            try w.print(
+                \\  middlewares:
+                \\    cowshed-{s}-redirect:
+                \\      redirectScheme:
+                \\        scheme: https
+                \\        permanent: true
+                \\
+            , .{name});
+        }
     }
     try w.print(
         \\  services:
@@ -114,11 +129,29 @@ test "with TLS and a redirect" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const text = try render(a, .{ .service = "s", .host = "h", .container = "c", .port = 1, .entrypoint = "websecure", .resolver = "le", .redirect_from = "web" });
+    const text = try render(a, .{ .service = "s", .host = "h", .container = "c", .port = 1, .entrypoint = "websecure", .resolver = "le", .http_from = "web" });
     var failure: yaml.Failure = undefined;
     const http = (try yaml.parse(a, text, &failure)).get("http").?.value;
     const routers = http.get("routers").?.value;
     try testing.expectEqualStrings("le", routers.get("cowshed-s").?.value.get("tls").?.value.get("certResolver").?.value.scalar);
-    try testing.expectEqualStrings("web", routers.get("cowshed-s-redirect").?.value.get("entryPoints").?.value.list[0].value.scalar);
+    try testing.expectEqualStrings("web", routers.get("cowshed-s-http").?.value.get("entryPoints").?.value.list[0].value.scalar);
+    try testing.expectEqualStrings("cowshed-s-redirect", routers.get("cowshed-s-http").?.value.get("middlewares").?.value.list[0].value.scalar);
     try testing.expect(http.get("middlewares").?.value.get("cowshed-s-redirect") != null);
+}
+
+test "with TLS and plain HTTP to the app as well" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const text = try render(a, .{ .service = "s", .host = "h", .container = "c", .port = 1, .entrypoint = "websecure", .resolver = "le", .http_from = "web", .redirect = false });
+    var failure: yaml.Failure = undefined;
+    const http = (try yaml.parse(a, text, &failure)).get("http").?.value;
+    const routers = http.get("routers").?.value;
+    try testing.expectEqualStrings("le", routers.get("cowshed-s").?.value.get("tls").?.value.get("certResolver").?.value.scalar);
+    const plain = routers.get("cowshed-s-http").?.value;
+    try testing.expectEqualStrings("web", plain.get("entryPoints").?.value.list[0].value.scalar);
+    try testing.expectEqualStrings("cowshed-s", plain.get("service").?.value.scalar);
+    try testing.expect(plain.get("middlewares") == null);
+    try testing.expect(plain.get("tls") == null);
+    try testing.expect(http.get("middlewares") == null);
 }

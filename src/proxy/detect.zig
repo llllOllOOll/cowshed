@@ -34,6 +34,8 @@ pub const Traefik = struct {
     https_entrypoint: ?[]const u8,
     resolver: ?[]const u8,
     api: bool,
+    /// Its HTTP entrypoint sends everything to HTTPS itself.
+    http_redirects: bool = false,
 };
 
 pub const Outcome = union(enum) {
@@ -99,6 +101,16 @@ fn read(arena: Allocator, remote: Remote, proxy: Config.Proxy, start: Traefik) R
     if (!proxy.ssl and flags.http_entrypoint == null) {
         return stopped(arena, "Traefik `{s}` has no entrypoint on 80", .{name});
     }
+    if (proxy.ssl and !proxy.ssl_redirect) {
+        // `ssl_redirect: false` means plain HTTP reaches the app, not merely
+        // that Cowshed adds no redirect of its own.
+        const http = flags.http_entrypoint orelse {
+            return stopped(arena, "the config has `proxy.ssl_redirect: false`, and Traefik `{s}` has no entrypoint on 80", .{name});
+        };
+        if (flags.http_redirects) {
+            return stopped(arena, "the config has `proxy.ssl_redirect: false`, and Traefik `{s}` sends all of `{s}` to HTTPS itself (`entrypoints.{s}.http.redirections`): plain HTTP cannot reach the app. Removing that is the server owner's change, and restarts Traefik", .{ name, http, http });
+        }
+    }
     const network = flags.docker_network orelse firstWord(networks);
     if (network.len == 0) return stopped(arena, "Traefik `{s}` is on no network", .{name});
 
@@ -109,6 +121,7 @@ fn read(arena: Allocator, remote: Remote, proxy: Config.Proxy, start: Traefik) R
     found.https_entrypoint = flags.https_entrypoint;
     found.resolver = flags.resolver;
     found.api = flags.api;
+    found.http_redirects = flags.http_redirects;
     return .{ .traefik = found };
 }
 

@@ -18,6 +18,10 @@ const OWN_ACME_MOUNT = "/etc/letsencrypt";
 pub const Flags = struct {
     http_entrypoint: ?[]const u8 = null,
     https_entrypoint: ?[]const u8 = null,
+    /// The HTTP entrypoint sends everything to HTTPS itself
+    /// (`entrypoints.<it>.http.redirections`), ahead of any router: no plain
+    /// HTTP reaches an app through it.
+    http_redirects: bool = false,
     resolver: ?[]const u8 = null,
     routes_dir: ?[]const u8 = null,
     /// A single file rather than a folder: a rename into place would break it.
@@ -75,6 +79,16 @@ pub fn parseFlags(args: []const []const u8) Flags {
             flags.api = !std.ascii.eqlIgnoreCase(value, "false");
         }
     }
+    // Once the HTTP entrypoint is known, whatever order the flags came in.
+    if (flags.http_entrypoint) |http| {
+        for (args) |arg| {
+            const text = matchPrefix(arg, "--") orelse continue;
+            const key = text[0 .. std.mem.indexOfScalar(u8, text, '=') orelse text.len];
+            const rest = matchPrefix(key, "entrypoints.") orelse continue;
+            if (rest.len <= http.len or !std.mem.eql(u8, rest[0..http.len], http) or rest[http.len] != '.') continue;
+            if (std.ascii.eqlIgnoreCase(rest[http.len + 1 ..], "http.redirections.entrypoint.to")) flags.http_redirects = true;
+        }
+    }
     return flags;
 }
 
@@ -87,6 +101,13 @@ pub fn parseSettings(root: yaml.Value) Flags {
             for (entrypoints.map) |entry| {
                 const address = scalar(entry.value, "address") orelse continue;
                 flags.addEntrypoint(entry.key, address);
+            }
+            if (flags.http_entrypoint) |http| {
+                for (entrypoints.map) |entry| {
+                    if (!std.mem.eql(u8, entry.key, http)) continue;
+                    const redirections = field(field(entry.value, "http") orelse break, "redirections") orelse break;
+                    flags.http_redirects = scalar(field(redirections, "entrypoint") orelse break, "to") != null;
+                }
             }
         }
     }
@@ -208,6 +229,15 @@ test "the flags of the owner's VPS" {
     try testing.expectEqualStrings("/etc/traefik", flags.routes_dir.?);
     try testing.expect(flags.api);
     try testing.expect(flags.found());
+    try testing.expect(flags.http_redirects);
+}
+
+test "a redirection is the HTTP entrypoint's, whatever order and case the flags come in" {
+    try testing.expect(parseFlags(&.{ "--entryPoints.Web.HTTP.Redirections.EntryPoint.To=s", "--entrypoints.Web.address=:80" }).http_redirects);
+    // Another entrypoint's redirection, or a name that only starts the same, is not its.
+    try testing.expect(!parseFlags(&.{ "--entrypoints.web.address=:80", "--entrypoints.alt.http.redirections.entrypoint.to=s" }).http_redirects);
+    try testing.expect(!parseFlags(&.{ "--entrypoints.web.address=:80", "--entrypoints.web2.http.redirections.entrypoint.to=s" }).http_redirects);
+    try testing.expect(!parseFlags(&.{ "--entrypoints.web.address=:80", "--entrypoints.websecure.address=:443" }).http_redirects);
 }
 
 test "flags are case-insensitive, names are not" {
@@ -283,6 +313,25 @@ test "a settings file with everything, in any case, among what it does not need"
     try testing.expectEqualStrings("web", flags.docker_network.?);
     try testing.expect(flags.watch_off);
     try testing.expect(flags.api);
+    try testing.expect(!flags.http_redirects);
+}
+
+test "a settings file whose HTTP entrypoint redirects" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const flags = try settings(&arena,
+        \\entryPoints:
+        \\  websecure:
+        \\    address: ":443"
+        \\  web:
+        \\    address: ":80"
+        \\    http:
+        \\      redirections:
+        \\        entryPoint:
+        \\          to: websecure
+        \\          scheme: https
+    );
+    try testing.expect(flags.http_redirects);
 }
 
 test "a settings file with one route file, and the flag naming a settings file" {

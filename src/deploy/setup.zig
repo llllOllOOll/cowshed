@@ -410,6 +410,36 @@ test "what an existing Traefik lacks for ssl, or from inside" {
     }
 }
 
+test "ssl_redirect off needs plain HTTP to reach the app" {
+    const plain: Config.Proxy = .{ .host = "a.example", .ssl = true, .ssl_redirect = false };
+    {
+        var h = Harness.create();
+        defer h.deinit();
+        h.start();
+        try existingWith(&h, "null\n[\"--entrypoints.web.address=:80\",\"--entrypoints.web.http.redirections.entrypoint.to=websecure\",\"--entrypoints.websecure.address=:443\",\"--providers.file.directory=/r\",\"--certificatesresolvers.le.acme.email=a@b\"]\nnet \n");
+        try testing.expect(!try h.setup(plain, .{}));
+        try h.says("sends all of `web` to HTTPS itself");
+        // Traefik is left as it is: no restart, no container touched.
+        try testing.expect(!h.fake.ran("docker run"));
+        try testing.expect(!h.fake.ran("docker rm"));
+    }
+    {
+        var h = Harness.create();
+        defer h.deinit();
+        h.start();
+        try existingWith(&h, "null\n[\"--entrypoints.websecure.address=:443\",\"--providers.file.directory=/r\",\"--certificatesresolvers.le.acme.email=a@b\"]\nnet \n");
+        try testing.expect(!try h.setup(plain, .{}));
+        try h.says("`proxy.ssl_redirect: false`, and Traefik `t` has no entrypoint on 80");
+    }
+    {
+        var h = Harness.create();
+        defer h.deinit();
+        h.start();
+        try existingWith(&h, VPS_INSPECT);
+        try testing.expect(try h.setup(plain, .{}));
+    }
+}
+
 test "two Traefiks, and another program on the ports, stop it" {
     {
         var h = Harness.create();

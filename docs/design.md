@@ -142,6 +142,7 @@ What the source says this costs us, and what Cowshed does about it:
 | With duplicate names, the first file by name wins, with only a log line | Names prefixed `cowshed-<service>-`; refuse a clash found in the folder |
 | Health checks do not gate traffic (servers start UP) and reset on any reload | Cowshed's own probe, step 7, before the switch |
 | A single bind-mounted file breaks on rename | Directories only; `setup` checks |
+| An entrypoint's own redirection (`entrypoints.<it>.http.redirections`) runs before any router | With `ssl_redirect: false`, which promises plain HTTP to the app, refuse such a Traefik |
 | The routes folder may not be writable from the host (the VPS: root, no sudo) | Write, probe and read the API through `docker exec` on Traefik's container, with its image's `sh` and `wget` |
 | Same rule by label and by file: the labelled router kept winning | File routers carry a high `priority` |
 | A resolver is static config: a router naming an unknown one only logs an error | Read the resolvers first, refuse an unknown one |

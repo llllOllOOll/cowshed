@@ -452,7 +452,9 @@ fn switchRoute(self: Run, traefik: detect.Traefik, name: []const u8) Error!bool 
         .port = proxy.app_port,
         .entrypoint = if (proxy.ssl) traefik.https_entrypoint.? else traefik.http_entrypoint.?,
         .resolver = if (proxy.ssl) traefik.resolver else null,
-        .redirect_from = if (proxy.ssl and proxy.ssl_redirect) traefik.http_entrypoint else null,
+        // Detection has already refused `ssl_redirect: false` with no HTTP entrypoint.
+        .http_from = if (proxy.ssl) traefik.http_entrypoint else null,
+        .redirect = proxy.ssl_redirect,
     });
     try self.say("switch: writing the route {s}", .{file});
     const written = try self.inTraefik(traefik, WRITE_ROUTE, &.{ traefik.routes_dir, file }, text);
