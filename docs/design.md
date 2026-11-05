@@ -97,6 +97,13 @@ how far along it is every 5 s.
    the likely cause, since a broken file elsewhere blocks everything. Its YAML is not
    checked beforehand: other people's files may use YAML our parser refuses.
 10. Drain (below), then `docker stop` the old container. It stays for rollback.
+    Every other version not at rest goes too: one `restarting`, which Docker starts
+    again each time it exits and so runs its code (a queue's jobs, a cron) after the
+    fix is live, or `paused`. Neither has connections to drain. A version in a loop
+    is seen running for a moment too, so each one's restart policy is turned off
+    before its stop, else Docker may start it between the stop and its end; the log
+    says how often it restarted, and a `rollback` gives the policy back. `exited` and
+    `created` are left as they are, and a container named in `replaces` keeps its policy.
 11. Prune, append to the audit log, release the lock.
 12. Request the app's real URL from this machine. Only told, not a failure: DNS or a
     first certificate may take longer.

@@ -443,22 +443,27 @@ fn switchRoute(self: Run, traefik: detect.Traefik, name: []const u8) Error!bool 
     return routing.switchTo(self.context(), traefik, .{ .key = config.service, .proxy = config.proxy.?, .container = name });
 }
 
+/// `ours` is a version of this app; a container named in `replaces` is another tool's.
+const Old = struct { name: []const u8, state: []const u8 = "running", ours: bool = false };
+
+/// Every other version not at rest goes: running, but also restarting, which keeps
+/// running code (a queue's jobs, a cron) each time Docker starts it again.
 fn retireOld(self: Run, new_name: []const u8) Error!void {
     const config = self.config();
     const listing = try self.ask(try docker.listAll(self.arena, config.service));
-    var old: std.ArrayList([]const u8) = .empty;
+    var old: std.ArrayList(Old) = .empty;
     var lines = std.mem.splitScalar(u8, listing.stdout, '\n');
     while (lines.next()) |line| {
         var fields = std.mem.splitScalar(u8, line, '\t');
         const name = fields.next() orelse continue;
         const state = fields.next() orelse continue;
-        if (std.mem.eql(u8, state, "running") and !std.mem.eql(u8, name, new_name)) try old.append(self.arena, name);
+        if (docker.isActive(state) and !std.mem.eql(u8, name, new_name)) try old.append(self.arena, .{ .name = name, .state = state, .ours = true });
     }
     if (config.replaces) |replaces| {
         if (std.mem.endsWith(u8, replaces, "*")) {
             try appendReplaced(self, &old, replaces[0 .. replaces.len - 1], new_name);
         } else if (try isRunning(self, replaces)) {
-            try old.append(self.arena, replaces);
+            try old.append(self.arena, .{ .name = replaces });
         }
     }
     if (old.items.len == 0) {
@@ -467,26 +472,52 @@ fn retireOld(self: Run, new_name: []const u8) Error!void {
     }
 
     if (config.proxy) |proxy| {
-        // HTTP's and each raw TCP port's connections alike.
-        var ports: std.ArrayList(u16) = .empty;
-        try ports.append(self.arena, proxy.app_port);
-        try ports.appendSlice(self.arena, proxy.tcp);
-        try drain(self, old.items, ports.items);
-    }
-    for (old.items) |name| {
-        try self.say("old: stopping {s}", .{name});
-        const stopped = try self.ask(try docker.stop(self.arena, name));
-        if (stopped.ok()) {
-            try self.say("old: stopped {s}", .{name});
-        } else {
-            try self.say("notice: could not stop {s}: {s}", .{ name, std.mem.trimEnd(u8, stopped.stderr, "\r\n") });
+        // HTTP's and each raw TCP port's connections alike; only a running one has any.
+        var running: std.ArrayList([]const u8) = .empty;
+        for (old.items) |one| {
+            if (std.mem.eql(u8, one.state, "running")) try running.append(self.arena, one.name);
         }
+        if (running.items.len > 0) {
+            var ports: std.ArrayList(u16) = .empty;
+            try ports.append(self.arena, proxy.app_port);
+            try ports.appendSlice(self.arena, proxy.tcp);
+            try drain(self, running.items, ports.items);
+        }
+    }
+    for (old.items) |one| try stopOld(self, one);
+}
+
+/// A version caught in a loop may be seen running for a moment: each of ours has its
+/// restarts turned off before the stop, else Docker may start it again before the stop
+/// ends. A `rollback` gives the policy back.
+fn stopOld(self: Run, one: Old) Error!void {
+    var detail: []const u8 = "";
+    if (one.ours) {
+        const asked = try self.ask(try docker.restartCount(self.arena, one.name));
+        const restarts = std.mem.trim(u8, asked.stdout, " \r\n");
+        const looped = asked.ok() and restarts.len > 0 and !std.mem.eql(u8, restarts, "0");
+        if (looped) {
+            detail = try std.fmt.allocPrint(self.arena, " (was {s}, {s} restarts)", .{ one.state, restarts });
+        } else if (!std.mem.eql(u8, one.state, "running")) {
+            detail = try std.fmt.allocPrint(self.arena, " (was {s})", .{one.state});
+        }
+    }
+    try self.say("old: stopping {s}{s}", .{ one.name, detail });
+    if (one.ours) {
+        const updated = try self.ask(try docker.noRestart(self.arena, one.name));
+        if (!updated.ok()) try self.say("notice: could not turn off the restarts of {s}: {s}", .{ one.name, std.mem.trimEnd(u8, updated.stderr, "\r\n") });
+    }
+    const stopped = try self.ask(try docker.stop(self.arena, one.name));
+    if (stopped.ok()) {
+        try self.say("old: stopped {s}", .{one.name});
+    } else {
+        try self.say("notice: could not stop {s}: {s}", .{ one.name, std.mem.trimEnd(u8, stopped.stderr, "\r\n") });
     }
 }
 
 /// Every running container whose name starts with `prefix`, but the new one and
 /// those already to stop: Cowshed's own versions may share the start.
-fn appendReplaced(self: Run, old: *std.ArrayList([]const u8), prefix: []const u8, new_name: []const u8) Error!void {
+fn appendReplaced(self: Run, old: *std.ArrayList(Old), prefix: []const u8, new_name: []const u8) Error!void {
     const listed = try self.ask(docker.list_running);
     if (!listed.ok()) {
         try self.say("notice: could not list what `replaces` names: {s}", .{std.mem.trimEnd(u8, listed.stderr, "\r\n")});
@@ -494,10 +525,10 @@ fn appendReplaced(self: Run, old: *std.ArrayList([]const u8), prefix: []const u8
     }
     next: for (try detect.parseRunning(self.arena, listed.stdout)) |container| {
         if (!std.mem.startsWith(u8, container.name, prefix) or std.mem.eql(u8, container.name, new_name)) continue;
-        for (old.items) |name| {
-            if (std.mem.eql(u8, name, container.name)) continue :next;
+        for (old.items) |one| {
+            if (std.mem.eql(u8, one.name, container.name)) continue :next;
         }
-        try old.append(self.arena, container.name);
+        try old.append(self.arena, .{ .name = container.name });
     }
 }
 
@@ -639,6 +670,9 @@ pub fn rollback(arena: Allocator, remote: Remote, out: *Writer, config: Config, 
     };
 
     try self.audit("rollback started");
+    // One stopped while it restarted lost its policy; every version is made with it.
+    const policy = try self.ask(try docker.restartUnlessStopped(arena, name));
+    if (!policy.ok()) try self.say("notice: could not give {s} back its restart policy: {s}", .{ name, std.mem.trimEnd(u8, policy.stderr, "\r\n") });
     try self.say("container: starting {s}", .{name});
     const started = try self.ask(try docker.start(arena, name));
     if (!started.ok()) {
@@ -664,7 +698,7 @@ pub fn rollback(arena: Allocator, remote: Remote, out: *Writer, config: Config, 
     return true;
 }
 
-/// The newest: `docker ps` lists newest first.
+/// The newest at rest: `docker ps` lists newest first. One restarting is not stopped.
 fn findStopped(listing: []const u8, version: []const u8) ?[]const u8 {
     var lines = std.mem.splitScalar(u8, listing, '\n');
     while (lines.next()) |line| {
@@ -672,7 +706,7 @@ fn findStopped(listing: []const u8, version: []const u8) ?[]const u8 {
         const name = fields.next() orelse continue;
         const state = fields.next() orelse continue;
         const candidate = fields.next() orelse continue;
-        if (std.mem.eql(u8, candidate, version) and !std.mem.eql(u8, state, "running")) return name;
+        if (std.mem.eql(u8, candidate, version) and !docker.isActive(state)) return name;
     }
     return null;
 }
@@ -1259,6 +1293,75 @@ test "stage: with no Traefik yet, as when another proxy holds the ports, the ima
     try h.says("no Traefik runs on this server");
 }
 
+test "an old version restarting in a loop: its restarts turned off, then stopped, and said so" {
+    var h = harness();
+    defer h.arena.deinit();
+    try h.begin();
+    try h.on("docker ps -a", 0, "app-web-v1\trunning\tv1\napp-web-v0\trestarting\tv0\napp-web-vp\tpaused\tvp\napp-web-vx\texited\tvx\napp-web-vc\tcreated\tvc\n");
+    try h.on("{{.RestartCount}} app-web-v0", 0, "11\n");
+    try testing.expect(try h.deploy(PROXIED));
+    try h.before("docker update --restart no app-web-v0", "docker stop app-web-v0");
+    try h.before("docker update --restart no app-web-vp", "docker stop app-web-vp");
+    try h.says("old: stopping app-web-v0 (was restarting, 11 restarts)");
+    try h.says("old: stopping app-web-vp (was paused)");
+    try h.says("old: stopped app-web-v0");
+    // The running one drained and stopped as before, with no restarts said.
+    try h.before("docker update --restart no app-web-v1", "docker stop app-web-v1");
+    try h.says("old: stopping app-web-v1\n");
+    // Only a running one is drained.
+    try testing.expect(!h.fake.ran("{{.State.Pid}} app-web-v0"));
+    // At rest: untouched.
+    for ([_][]const u8{ "app-web-vx", "app-web-vc" }) |name| {
+        try testing.expect(!h.fake.ran(try std.fmt.allocPrint(h.arena.allocator(), "docker stop {s}", .{name})));
+        try testing.expect(!h.fake.ran(try std.fmt.allocPrint(h.arena.allocator(), "docker update --restart no {s}", .{name})));
+    }
+}
+
+test "a loop caught running for a moment: its restarts said, turned off, then stopped" {
+    var h = harness();
+    defer h.arena.deinit();
+    try h.begin();
+    try h.on("{{.RestartCount}} app-web-v1", 0, "4\n");
+    try testing.expect(try h.deploy(PROXIED));
+    try h.says("old: stopping app-web-v1 (was running, 4 restarts)");
+    try h.before("docker update --restart no app-web-v1", "docker stop app-web-v1");
+}
+
+test "a container named in `replaces` is another tool's: stopped, its policy left alone" {
+    var h = harness();
+    defer h.arena.deinit();
+    try h.begin();
+    var config = PROXIED;
+    config.replaces = "grape-arena";
+    try testing.expect(try h.deploy(config));
+    try testing.expect(h.fake.ran("docker stop grape-arena"));
+    try testing.expect(!h.fake.ran("docker update --restart no grape-arena"));
+    try testing.expect(!h.fake.ran("{{.RestartCount}} grape-arena"));
+}
+
+test "only a version restarting: no drain, it is stopped all the same" {
+    var h = harness();
+    defer h.arena.deinit();
+    try h.begin();
+    try h.on("docker ps -a", 0, "app-web-v1\trestarting\tv1\n");
+    try h.on("/proc/$1/net/tcp", 0, TABLE);
+    try testing.expect(try h.deploy(PROXIED));
+    try testing.expect(!h.fake.ran("{{.State.Pid}}"));
+    try h.before("docker update --restart no app-web-v1", "docker stop app-web-v1");
+    try testing.expect(std.mem.indexOf(u8, h.output.written(), "nothing else was running") == null);
+}
+
+test "restarts that cannot be turned off are told, and it is stopped anyway" {
+    var h = harness();
+    defer h.arena.deinit();
+    try h.begin();
+    try h.on("docker ps -a", 0, "app-web-v1\trestarting\tv1\n");
+    try h.on("docker update --restart no", 1, "");
+    try testing.expect(try h.deploy(PROXIED));
+    try h.says("could not turn off the restarts of app-web-v1");
+    try testing.expect(h.fake.ran("docker stop app-web-v1"));
+}
+
 test "a container that cannot be stopped is told, the deploy is done" {
     var h = harness();
     defer h.arena.deinit();
@@ -1308,6 +1411,27 @@ test "rollback: starts the stopped one, proves it, switches, stops the live one"
     try testing.expect(!h.fake.ran("docker run"));
     try testing.expect(!h.sender.sent);
     try h.says("rolled back to v1");
+}
+
+test "rollback gives back the restart policy before starting, as one stopped in a loop lost it" {
+    var h = harness();
+    defer h.arena.deinit();
+    try h.begin();
+    try h.on("docker ps -a", 0, "app-web-v2\trunning\tv2\napp-web-v1\texited\tv1\n");
+    try h.on("wget -qO- http://127.0.0.1:8080", 0, "http://app-web-v1:80");
+    try testing.expect(try rollbackTo(&h, "v1"));
+    try h.before("docker update --restart unless-stopped app-web-v1", "docker start app-web-v1");
+}
+
+test "rollback never takes a version restarting for a stopped one" {
+    var h = harness();
+    defer h.arena.deinit();
+    try h.begin();
+    try h.on("docker ps -a", 0, "app-web-v2\trunning\tv2\napp-web-v1\trestarting\tv1\n");
+    try testing.expect(!try rollbackTo(&h, "v1"));
+    try h.says("no stopped container of version v1");
+    try testing.expect(!h.fake.ran("docker start"));
+    try testing.expect(!h.fake.ran("docker update"));
 }
 
 test "rollback failing its health: stopped again, never removed, live untouched" {

@@ -237,6 +237,27 @@ pub fn stop(arena: Allocator, name: []const u8) Allocator.Error![]const []const 
     return arena.dupe([]const u8, &.{ "docker", "stop", name });
 }
 
+/// Before stopping one that restarts by itself: otherwise Docker may start it again
+/// between the stop and its end.
+pub fn noRestart(arena: Allocator, name: []const u8) Allocator.Error![]const []const u8 {
+    return arena.dupe([]const u8, &.{ "docker", "update", "--restart", "no", name });
+}
+
+/// The policy every version is made with, `runApp`'s, given back to one started again.
+pub fn restartUnlessStopped(arena: Allocator, name: []const u8) Allocator.Error![]const []const u8 {
+    return arena.dupe([]const u8, &.{ "docker", "update", "--restart", "unless-stopped", name });
+}
+
+pub fn restartCount(arena: Allocator, name: []const u8) Allocator.Error![]const []const u8 {
+    return arena.dupe([]const u8, &.{ "docker", "inspect", "--format", "{{.RestartCount}}", name });
+}
+
+/// A state `docker ps` gives that is not at rest: running, starting itself again
+/// after exiting, or frozen. Each still holds what it held, and the first two run code.
+pub fn isActive(state: []const u8) bool {
+    return std.mem.eql(u8, state, "running") or std.mem.eql(u8, state, "restarting") or std.mem.eql(u8, state, "paused");
+}
+
 pub fn logs(arena: Allocator, name: []const u8) Allocator.Error![]const []const u8 {
     return arena.dupe([]const u8, &.{ "docker", "logs", "--tail", "20", name });
 }

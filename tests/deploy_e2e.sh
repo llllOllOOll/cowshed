@@ -299,9 +299,29 @@ now=$(inside docker ps --filter label=service=e2e --format '{{.Names}}')
 [ "$(inside docker exec "$now" cat /data/mark)" = kept ] || fail "the rollback lost the volume"
 [ "$(serving)" = seven ] || fail "not back on seven"
 
+echo "== an old version restarting in a loop: warned of, stopped by the next deploy, for good"
+image=$(inside docker ps --filter label=service=e2e --format '{{.Image}}')
+# As a version that crashes on its first job: Docker starts it again and again.
+inside docker run -d --name e2e-web-looping --label service=e2e --label version=looping --restart unless-stopped "$image" sh -c 'sleep 0.3; exit 3' >/dev/null
+for _ in $(seq 40); do
+	[ "$(inside docker inspect --format '{{.State.Restarting}}' e2e-web-looping)" = true ] && break
+	sleep 0.25
+done
+cowshed versions | grep -q "warning: e2e-web-looping is restarting" || fail "versions did not warn of the loop"
+cowshed deploy --force > "$WORK/out" || { cat "$WORK/out"; fail "the deploy failed"; }
+grep -q "old: stopping e2e-web-looping (was [a-z]*, [0-9]* restarts)" "$WORK/out" || { cat "$WORK/out"; fail "the loop was not stopped, or not said"; }
+grep -q "nothing else was running" "$WORK/out" && fail "said nothing else was running"
+before=$(inside docker inspect --format '{{.RestartCount}}' e2e-web-looping)
+sleep 3
+[ "$(inside docker inspect --format '{{.State.Status}}' e2e-web-looping)" = exited ] || fail "the loop is not exited"
+[ "$(inside docker inspect --format '{{.RestartCount}}' e2e-web-looping)" = "$before" ] || fail "the loop restarted after the stop"
+# The deploy put the last commit back on the air, over the rollback to seven.
+[ "$(serving)" = streaming ] || fail "not serving the last commit"
+inside docker rm -f e2e-web-looping >/dev/null
+
 echo "== remove: only with --yes"
 if cowshed remove > "$WORK/out"; then fail "removed without --yes"; fi
-[ "$(serving)" = seven ] || fail "removed without --yes"
+[ "$(serving)" = streaming ] || fail "removed without --yes"
 cowshed remove --yes | tail -1
 [ -z "$(inside docker ps -aq --filter label=service=e2e --filter label=version)" ] || fail "containers left"
 [ -z "$(inside docker image ls -q --filter label=version e2e-app)" ] || fail "images left"

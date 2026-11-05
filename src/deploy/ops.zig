@@ -74,8 +74,32 @@ pub fn versions(arena: Allocator, remote: Remote, out: *Writer, config: Config) 
         if (row.created.len > 0) try out.print("  {s}", .{row.created[0..@min(row.created.len, CREATED_SHOWN)]});
         if (row.sources.len > 0) try out.print("  ({s})", .{row.sources});
         try out.writeByte('\n');
+        if (isStuck(row)) try warnStuck(out, row);
     }
     return true;
+}
+
+/// Not at rest and not live: one restarting runs its code again each time Docker
+/// starts it, a queue's jobs or a cron's too.
+fn isStuck(row: Row) bool {
+    return !std.mem.eql(u8, row.state, "running") and docker.isActive(row.state);
+}
+
+fn warnStuck(out: *Writer, row: Row) Writer.Error!void {
+    try out.print("warning: {s} is {s}, not live: if it keeps exiting, Docker starts it again and its code runs each time. The next deploy stops it\n", .{ row.name, row.state });
+}
+
+/// For `check --remote`: warns of each version stuck so; true when there is none.
+pub fn checkStuck(arena: Allocator, remote: Remote, out: *Writer, config: Config) Error!bool {
+    const listing = try remote.run(arena, .{ .argv = try docker.listAll(arena, config.service) });
+    if (!listing.ok()) return true;
+    var none = true;
+    for (try parseRows(arena, listing.stdout)) |row| {
+        if (!isStuck(row)) continue;
+        try warnStuck(out, row);
+        none = false;
+    }
+    return none;
 }
 
 pub fn logs(arena: Allocator, remote: Remote, out: *Writer, config: Config, lines: []const u8) Error!bool {
@@ -175,7 +199,10 @@ pub fn stop(arena: Allocator, remote: Remote, out: *Writer, config: Config, who:
     const rows = try list(arena, remote, out, config) orelse return false;
     var ok = true;
     for (rows) |row| {
-        if (!std.mem.eql(u8, row.state, "running")) continue;
+        if (!docker.isActive(row.state)) continue;
+        // One in a loop, even seen running for a moment, could be started again
+        // before the stop ends. A rollback gives the policy back.
+        _ = try remote.run(arena, .{ .argv = try docker.noRestart(arena, row.name) });
         const stopped = try remote.run(arena, .{ .argv = try docker.stop(arena, row.name) });
         if (stopped.ok()) {
             try out.print("stopped {s}\n", .{row.name});
@@ -290,6 +317,37 @@ test "versions mark what is live" {
     try h.on("docker ps -a", 0, "a\trunning\tv3\tgame@abc\n");
     try testing.expect(try versions(h.arena.allocator(), h.fake.remote(), &h.output.writer, CONFIG));
     try h.says("live  v3  a  (game@abc)");
+}
+
+test "versions warn of one restarting that is not live" {
+    var h = harness();
+    defer h.arena.deinit();
+    try h.begin();
+    try h.on("docker ps -a", 0, "app-web-v2\trunning\tv2\napp-web-v1\trestarting\tv1\n");
+    try testing.expect(try versions(h.arena.allocator(), h.fake.remote(), &h.output.writer, CONFIG));
+    try h.says("warning: app-web-v1 is restarting, not live");
+    try testing.expect(std.mem.indexOf(u8, h.output.written(), "app-web-v2 is") == null);
+}
+
+test "check --remote's look: one restarting is warned of, the live one is not" {
+    var h = harness();
+    defer h.arena.deinit();
+    try h.begin();
+    try testing.expect(try checkStuck(h.arena.allocator(), h.fake.remote(), &h.output.writer, CONFIG));
+    try h.on("docker ps -a", 0, "app-web-v2\trunning\tv2\napp-web-v1\trestarting\tv1\n");
+    try testing.expect(!try checkStuck(h.arena.allocator(), h.fake.remote(), &h.output.writer, CONFIG));
+    try h.says("warning: app-web-v1 is restarting");
+}
+
+test "stop: one restarting too, its restarts turned off first" {
+    var h = harness();
+    defer h.arena.deinit();
+    try h.begin();
+    try h.on("docker ps -a", 0, "app-web-v2\trunning\tv2\napp-web-v1\trestarting\tv1\napp-web-v0\texited\tv0\n");
+    try testing.expect(try stop(h.arena.allocator(), h.fake.remote(), &h.output.writer, CONFIG, "me"));
+    try testing.expect(h.fake.position("docker update --restart no app-web-v2").? < h.fake.position("docker stop app-web-v2").?);
+    try testing.expect(h.fake.position("docker update --restart no app-web-v1").? < h.fake.position("docker stop app-web-v1").?);
+    try testing.expect(!h.fake.ran("docker stop app-web-v0"));
 }
 
 test "logs are the live container's" {

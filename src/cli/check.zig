@@ -7,6 +7,7 @@ const secrets = @import("../config/secrets.zig");
 const local = @import("../image/local.zig");
 const Remote = @import("../remote/Remote.zig");
 const Ssh = @import("../remote/Ssh.zig");
+const core = @import("../deploy/ops.zig");
 const Allocator = std.mem.Allocator;
 
 pub const DEFAULT_CONFIG_PATH = "config/deploy.yml";
@@ -109,6 +110,11 @@ fn checkRemote(arena: Allocator, io: std.Io, out: *std.Io.Writer, config: Config
         return false;
     }
     try out.print("server: Docker {s}\n", .{std.mem.trimEnd(u8, docker.stdout, "\r\n")});
+    // A warning, not a failure: the config is fine, and the next deploy stops it.
+    _ = core.checkStuck(arena, remote, out, config) catch |err| {
+        try out.print("server: {t}: {s}\n", .{ err, ssh.connection_error });
+        return false;
+    };
     return true;
 }
 

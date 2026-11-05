@@ -14,7 +14,8 @@ Cowshed's: `config/deploy.yml`, `.cowshed/secrets`, and the secrets kept out of 
 
 **`cowshed check [--secrets <path>] [--remote]`** reads the config and the secrets'
 names, without running any secret's command. `--remote` also reaches the server and
-Docker. Changes nothing.
+Docker, and warns of a version that is not live but restarting: Docker starts it again
+each time it exits, so its code keeps running. Changes nothing.
 
 `setup`, `proxy adopt`, `deploy` and `rollback` keep a copy of what they say on this machine, in
 `~/.local/state/cowshed/logs/`, and name the file at the end. A build's own output stays on the
@@ -43,7 +44,8 @@ a YAML settings file; anything else it refuses, saying what to add by hand.
 
 **`cowshed deploy [--secrets <path>] [--dirty] [--force] [--migrate]`** builds the image on this
 machine, sends what the server lacks, starts the new version beside the old one, checks
-its health, moves the traffic, waits for the old one's connections and stops it. With `--migrate`, the
+its health, moves the traffic, waits for the old one's connections and stops it, with any
+other version still restarting by itself, which would keep running its code. With `--migrate`, the
 config's `backup` and `migrate` run once, in that order, before the new version starts. Until the traffic moves, any failure
 leaves the old version untouched, though not what a migration has done to the data.
 
@@ -62,12 +64,14 @@ commits, it says so and stops.
   proxy still holds, the image goes before the window that moves it.
 
 **`cowshed rollback <version>`** goes back to a version still on the server, with no
-build. If it fails its health it is stopped again, and what is live stays live.
+build. If it fails its health it is stopped again, and what is live stays live. A version
+stopped while it restarted in a loop gets its restart policy back.
 
 ## Looking
 
 **`cowshed versions`** lists what is on the server, what is live, when each was made, in the
-server's time, and what it was made from.
+server's time, and what it was made from. A version not live but restarting is warned of:
+its code runs each time Docker starts it again, and the next deploy stops it.
 
 **`cowshed logs [--lines <n>]`** shows the live container's latest logs (100 by default).
 
@@ -88,8 +92,8 @@ by the env file. Only its name is said.
 **`cowshed prune`** removes what no kept version uses. A deploy does this too; the last
 3 stopped containers stay for a rollback.
 
-**`cowshed stop`** removes the route and stops what runs. The containers stay, and a
-`rollback` brings one back.
+**`cowshed stop`** removes the route and stops what runs, a version restarting by itself
+too. The containers stay, and a `rollback` brings one back.
 
 **`cowshed remove [--yes]`** removes the app from the server for good: route, containers,
 images and their files. Without `--yes` it only lists them. The audit log, a container
