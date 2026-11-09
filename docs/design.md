@@ -24,6 +24,8 @@ on a throwaway server; `setup` and `deploy` also on a real one, for one app.
 | `cowshed lock status / release` | The deploy lock |
 | `cowshed audit` | Who deployed what and when |
 | `cowshed accessory boot / reboot / start / stop / logs / exec / remove NAME` | Long-lived containers beside the app (database, Keycloak), left alone by deploys |
+| `cowshed proxy adopt [--yes]` | Gives a working Traefik a routes folder; says what it would do, and only with `--yes` restarts it |
+| `cowshed update` | Replaces this binary with the latest GitHub release, after checking it against the release's `SHA256SUMS`; one rename, so a failure leaves the old one |
 
 ## A project in a monorepo
 
