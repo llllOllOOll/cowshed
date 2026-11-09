@@ -2,7 +2,8 @@
 
 Cowshed deploys Docker containers to a server over SSH, as one Zig 0.17 binary.
 README.md is the overview, `docs/usage.md`, `docs/commands.md` and
-`docs/configuration.md` its use, `docs/design.md` the design, BACKLOG.md the plan.
+`docs/configuration.md` its use, `docs/design.md` the design. The plan and its tasks are on the Coyote
+board (project Cowshed), not in files.
 This file is for working on Cowshed; an agent using it on a project follows
 `docs/usage.md`.
 
@@ -65,8 +66,8 @@ Folders appear with their first file; this tree is the target.
 ## Keeping the docs true
 
 In the same commit as a change: this file and `docs/` when a command, rule or
-behaviour changes, README.md when what a user sees changes, BACKLOG.md for what
-landed and what was found.
+behaviour changes, README.md when what a user sees changes. What landed and what was found
+goes on the Coyote board, never in a Markdown file.
 
 **The docs speak only of Cowshed:** what it does and why, never what inspired it or
 how other tools compare.

@@ -5,7 +5,7 @@ server needs nothing of Cowshed's: no agent, no panel and no proxy of its own.
 
 **Status:** early. Every command is tested on a throwaway server, and `setup` and
 `deploy` have run on real ones, and so have `proxy adopt`, a first certificate, a volume and a
-rollback, beside other apps. The plan is in [BACKLOG.md](BACKLOG.md). Using it, for people and
+rollback, beside other apps. Using it, for people and
 coding agents: [usage](docs/usage.md), [commands](docs/commands.md),
 [configuration](docs/configuration.md). How it works: [design](docs/design.md).
 
