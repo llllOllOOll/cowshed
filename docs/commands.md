@@ -100,6 +100,17 @@ images and their files. Without `--yes` it only lists them. The audit log, a con
 named in `replaces`, the project's networks and what volumes hold stay, as do containers
 and images without Cowshed's `version` label, even with the service's.
 
+## Cowshed itself
+
+**`cowshed update`** replaces this binary with the latest release on GitHub. It downloads the
+binary for this system and the release's `SHA256SUMS`, and changes nothing unless they match;
+then it writes the new file beside the old one and renames it over, so a failure leaves the
+old binary as it was. Already on the latest, it says so. A binary in a folder only root
+writes needs `sudo cowshed update`.
+
+**`cowshed version`** says the version: a release's number, or one ending in `-dev` for a
+binary built from the source.
+
 ## Accessories
 
 **`cowshed accessory [-c <path>] [--secrets <path>] <action> <name>`** works on the

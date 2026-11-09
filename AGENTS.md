@@ -20,12 +20,19 @@ tests/accessory_e2e.sh # accessories: secrets, files, directories, their life
 tests/tcp_e2e.sh     # raw TCP through our Traefik: switched, drained, refused
 ```
 
+**Releasing:** set `.version` in `build.zig.zon`, commit, then tag `vX.Y.Z` on that
+commit and push the tag. `.github/workflows/release.yml` runs `scripts/check.sh`, refuses a
+tag that differs from `build.zig.zon`, and publishes `cowshed-{linux,macos}-{x86_64,aarch64}`
+with `SHA256SUMS`, the files `scripts/install.sh` and `cowshed update` read. Builds without
+`-Dversion` call themselves `X.Y.Z-dev`.
+
 ## Architecture: ports and adapters
 
 ```
 src/
 ├── main.zig      # Entry point
-├── cli/          # Reads arguments; a file per command, `ops.zig` for those on a deployed app
+├── cli/          # Reads arguments; a file per command, `ops.zig` for those on a deployed app,
+│                 # `update.zig` the one that reaches GitHub (HTTPS, no process)
 ├── config/       # YAML, validation, secrets
 ├── deploy/       # The core: the steps of deploy, rollback and prune
 ├── docker/       # Builds Docker commands, runs nothing

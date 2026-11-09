@@ -1,0 +1,74 @@
+# A tag vX.Y.Z publishes that release: the checks of scripts/check.sh on the
+# tagged commit, then one binary per system and their SHA256SUMS. The tag must
+# be build.zig.zon's version: bump it in the commit being tagged.
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Format, tests and architecture rules
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+      - name: The tag is build.zig.zon's version
+        run: |
+          zon=$(sed -n 's/^ *\.version = "\(.*\)",$/\1/p' build.zig.zon)
+          if [ "v${zon}" != "${GITHUB_REF_NAME}" ]; then
+            echo "tag ${GITHUB_REF_NAME} but build.zig.zon says ${zon}"
+            exit 1
+          fi
+      - run: scripts/check.sh
+
+  build:
+    name: Build ${{ matrix.asset }}
+    needs: check
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - { asset: cowshed-linux-x86_64, target: x86_64-linux }
+          - { asset: cowshed-linux-aarch64, target: aarch64-linux }
+          - { asset: cowshed-macos-x86_64, target: x86_64-macos }
+          - { asset: cowshed-macos-aarch64, target: aarch64-macos }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+      - name: Build
+        run: |
+          zig build -Doptimize=ReleaseSafe -Dstrip=true -Dtarget=${{ matrix.target }} -Dversion="${GITHUB_REF_NAME#v}"
+          mv zig-out/bin/cowshed ${{ matrix.asset }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}
+
+  release:
+    name: Publish
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - name: SHA256SUMS
+        run: sha256sum cowshed-* > SHA256SUMS && cat SHA256SUMS
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            cowshed-*
+            SHA256SUMS
+          generate_release_notes: true

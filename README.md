@@ -22,6 +22,18 @@ coding agents: [usage](docs/usage.md), [commands](docs/commands.md),
 - **Safety:** a lock refuses two deploys at once, and a log on the server records
   who deployed what.
 
+## Installing
+
+On Linux or macOS (x86_64 or aarch64), the latest release, checked against its SHA-256:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/llllOllOOll/cowshed/main/scripts/install.sh | bash
+cowshed update   # later: the newest release, the same way
+```
+
+It goes to `/usr/local/bin`, with sudo when needed; `COWSHED_INSTALL_DIR` puts it elsewhere.
+Only your machine needs it, never the server.
+
 ## Starting a project
 
 ```bash
@@ -40,7 +52,10 @@ app behind that Traefik for some seconds, so that is the server owner's call.
 Needs Zig 0.17.
 
 ```bash
-zig build            # zig-out/bin/cowshed
+zig build            # zig-out/bin/cowshed, whose version ends in -dev
 zig build test       # unit tests
 scripts/check.sh     # everything a commit must pass
 ```
+
+A release is a tag `vX.Y.Z` on a commit whose `build.zig.zon` says `X.Y.Z`: GitHub then
+runs the checks and publishes a binary per system with their `SHA256SUMS`.

@@ -26,6 +26,7 @@ test {
     _ = @import("cli/lock.zig");
     _ = @import("cli/ops.zig");
     _ = @import("cli/accessory.zig");
+    _ = @import("cli/update.zig");
     _ = @import("deploy/adopt.zig");
     _ = @import("deploy/accessory.zig");
     _ = @import("proxy/adopt.zig");

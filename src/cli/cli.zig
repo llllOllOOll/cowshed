@@ -9,9 +9,10 @@ const lock = @import("lock.zig");
 const proxy = @import("proxy.zig");
 const ops = @import("ops.zig");
 const accessory = @import("accessory.zig");
+const update = @import("update.zig");
 const Allocator = std.mem.Allocator;
 
-pub const VERSION = "0.0.1";
+pub const VERSION = @import("build_options").version;
 
 pub const USAGE =
     \\cowshed: deploy Docker containers to a server over SSH
@@ -58,6 +59,7 @@ pub const USAGE =
     \\    exec <name> <command...>   A command in it, while it runs
     \\    remove <name> --yes    The container and its files; its directories stay
     \\    (-c, --config <path> and --secrets <path> right after `accessory`)
+    \\  update     Replace this binary with the latest release, checked against its SHA-256
     \\  version    Show the version
     \\  help       Show this help
     \\
@@ -66,6 +68,7 @@ pub const USAGE =
 pub const Parsed = union(enum) {
     help,
     version,
+    update,
     init: init.Options,
     check: check.Options,
     setup: setup.Options,
@@ -83,6 +86,7 @@ pub fn parse(args: []const []const u8) Parsed {
     const command = args[0];
     if (eql(command, "help") or eql(command, "--help")) return .help;
     if (eql(command, "version") or eql(command, "--version")) return .version;
+    if (eql(command, "update")) return if (args.len == 1) .update else .{ .invalid = args[1] };
     if (eql(command, "init")) return parseInit(args[1..]);
     if (eql(command, "setup")) return parseSetup(args[1..]);
     if (eql(command, "deploy")) return parseDeploy(args[1..]);
@@ -218,6 +222,7 @@ pub fn run(arena: Allocator, io: std.Io, environ: *const std.process.Environ.Map
     switch (parse(args)) {
         .help => try out.writeAll(USAGE),
         .version => try out.writeAll(VERSION ++ "\n"),
+        .update => if (!try update.run(arena, io, out)) return 1,
         .init => |options| {
             if (!try init.run(arena, io, out, options)) return 1;
         },
@@ -261,6 +266,8 @@ test "commands and their flags" {
     try testing.expectEqual(.version, std.meta.activeTag(parse(&.{"version"})));
     try testing.expectEqual(.version, std.meta.activeTag(parse(&.{"--version"})));
     try testing.expectEqual(.help, std.meta.activeTag(parse(&.{"--help"})));
+    try testing.expectEqual(.update, std.meta.activeTag(parse(&.{"update"})));
+    try testing.expectEqualStrings("--nope", parse(&.{ "update", "--nope" }).invalid);
     const parsed = parse(&.{ "check", "-c", "a.yml", "--secrets", "s", "--remote" }).check;
     try testing.expectEqualStrings("a.yml", parsed.config_path);
     try testing.expectEqualStrings("s", parsed.secrets_path.?);

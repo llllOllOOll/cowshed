@@ -6,13 +6,16 @@ stops. For people and for coding agents alike. Every option is in
 
 ## Installing
 
-Build with Zig 0.17 on your machine, then put the binary on your `PATH`; the server needs
-nothing of it:
+On your machine, Linux or macOS; the server needs nothing of it:
 
 ```bash
-zig build
-cp zig-out/bin/cowshed ~/.local/bin/
+curl -fsSL https://raw.githubusercontent.com/llllOllOOll/cowshed/main/scripts/install.sh | bash
 ```
+
+It installs the latest release to `/usr/local/bin`, with sudo when needed, after checking
+it against the release's `SHA256SUMS`. `COWSHED_INSTALL_DIR` puts it elsewhere and
+`COWSHED_VERSION` picks another release. `cowshed update` later moves to the newest one, and
+`cowshed version` says which you have. Elsewhere, build it with Zig 0.17: `zig build`.
 
 ## What a project needs
 
