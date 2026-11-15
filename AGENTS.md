@@ -78,3 +78,11 @@ Comments and docs in English. `camelCase` functions, `PascalCase` types,
 `snake_case` variables, `SCREAMING_SNAKE_CASE` constants. A file that is a struct
 is `PascalCase.zig`, any other `snake_case.zig`. Tests at the end of a file; those
 needing real Docker in `tests/`.
+
+<!-- coyote:start -->
+## Coyote
+
+Tasks for this project are on the Coyote board. Before working, run `coyote instructions` and follow its
+workflow: find or create the task, `coyote start`, `coyote finish`, then `coyote pass` or `coyote fail`.
+Do not change code with no task in progress. If the command is missing or not connected, say so.
+<!-- coyote:end -->
