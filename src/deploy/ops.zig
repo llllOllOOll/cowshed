@@ -117,11 +117,8 @@ pub fn checkShared(arena: Allocator, remote: Remote, out: *Writer, config: Confi
     const listing = try remote.run(arena, .{ .argv = try docker.listAll(arena, config.service) });
     if (!listing.ok()) return true;
     const live = liveOf(try parseRows(arena, listing.stdout)) orelse return true;
-    const mode = try remote.run(arena, .{ .argv = &.{ "docker", "inspect", "--format", "{{.HostConfig.NetworkMode}}", live.name } });
-    if (!mode.ok()) return true;
-    const wanted = try std.fmt.allocPrint(arena, "container:{s}", .{trimmed(target.stdout)});
-    if (std.mem.eql(u8, trimmed(mode.stdout), wanted)) return true;
-    try out.print("warning: {s} is on the network of a `{s}` made again since: what reaches `{s}` does not reach it. `cowshed deploy` puts it on the new one\n", .{ live.name, container, container });
+    if (try deploy.onSharedNetwork(arena, remote, config, live.name)) return true;
+    try out.print("warning: {s} is on the network of a `{s}` made again since: what reaches `{s}` does not reach it. `cowshed deploy` puts it on the new one, even with nothing changed\n", .{ live.name, container, container });
     return false;
 }
 

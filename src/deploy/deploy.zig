@@ -136,20 +136,36 @@ const BACKUP_TIMED_OUT = 124;
 const BACKUP_EMPTY = 125;
 
 /// Whether what runs now was made from exactly these sources. If the server cannot
-/// say, no: the deploy goes on and meets the trouble itself.
-pub fn liveFrom(arena: Allocator, remote: Remote, service: []const u8, sources: []const u8) Remote.Error!bool {
-    const listing = try remote.run(arena, .{ .argv = try docker.listAll(arena, service) });
+/// say, no: the deploy goes on and meets the trouble itself. With `network`, one left
+/// on the network of a container made again since is not live: it is out of reach.
+pub fn liveFrom(arena: Allocator, remote: Remote, config: Config, sources: []const u8) Remote.Error!bool {
+    const listing = try remote.run(arena, .{ .argv = try docker.listAll(arena, config.service) });
     if (!listing.ok()) return false;
     var lines = std.mem.splitScalar(u8, listing.stdout, '\n');
     while (lines.next()) |line| {
         var fields = std.mem.splitScalar(u8, line, '\t');
-        _ = fields.next() orelse continue;
+        const name = fields.next() orelse continue;
         const state = fields.next() orelse continue;
         _ = fields.next() orelse continue;
         const made_from = fields.next() orelse continue;
-        if (std.mem.eql(u8, state, "running") and std.mem.eql(u8, made_from, sources)) return true;
+        if (std.mem.eql(u8, state, "running") and std.mem.eql(u8, made_from, sources)) {
+            return try onSharedNetwork(arena, remote, config, name);
+        }
     }
     return false;
+}
+
+/// True with no `network`, or when `name` is in the network of the container named
+/// there as it is now.
+pub fn onSharedNetwork(arena: Allocator, remote: Remote, config: Config, name: []const u8) Remote.Error!bool {
+    const network = config.network orelse return true;
+    const container = Config.sharedContainer(network).?;
+    const target = try remote.run(arena, .{ .argv = &.{ "docker", "inspect", "--format", "{{.Id}}", container } });
+    if (!target.ok()) return false;
+    const mode = try remote.run(arena, .{ .argv = &.{ "docker", "inspect", "--format", "{{.HostConfig.NetworkMode}}", name } });
+    if (!mode.ok()) return false;
+    const wanted = try std.fmt.allocPrint(arena, "container:{s}", .{std.mem.trim(u8, target.stdout, " \r\n")});
+    return std.mem.eql(u8, std.mem.trim(u8, mode.stdout, " \r\n"), wanted);
 }
 
 /// False when it stopped; why has been written to `out`.
@@ -1108,8 +1124,22 @@ test "what it was made from: on the container, in the log, and seen as live" {
     try testing.expect(h.fake.ran("--label sources=game@abc,engine@def"));
     try testing.expect(h.fake.ran("deploy started, from game@abc,engine@def"));
     try h.on("docker ps -a", 0, "app-web-v2\trunning\tv2\tgame@abc,engine@def\napp-web-v1\texited\tv1\tgame@old,engine@def\n");
-    try testing.expect(try liveFrom(a, h.fake.remote(), "app", "game@abc,engine@def"));
-    try testing.expect(!try liveFrom(a, h.fake.remote(), "app", "game@old,engine@def"));
+    try testing.expect(try liveFrom(a, h.fake.remote(), .{ .service = "app", .image = "", .host = "" }, "game@abc,engine@def"));
+    try testing.expect(!try liveFrom(a, h.fake.remote(), .{ .service = "app", .image = "", .host = "" }, "game@old,engine@def"));
+}
+
+test "with another container's network, the same sources left on a network made again since are not live" {
+    var h = harness();
+    defer h.arena.deinit();
+    try h.begin();
+    const a = h.arena.allocator();
+    try h.on("docker ps -a", 0, "app-web-v2\trunning\tv2\tgame@abc\n");
+    try h.on("docker inspect --format {{.Id}} castle", 0, "new111\n");
+    const config: Config = .{ .service = "app", .image = "", .host = "", .network = "container:castle" };
+    try h.on("{{.HostConfig.NetworkMode}} app-web-v2", 0, "container:old999\n");
+    try testing.expect(!try liveFrom(a, h.fake.remote(), config, "game@abc"));
+    try h.on("{{.HostConfig.NetworkMode}} app-web-v2", 0, "container:new111\n");
+    try testing.expect(try liveFrom(a, h.fake.remote(), config, "game@abc"));
 }
 
 test "a secret travels on stdin, never on a command line" {

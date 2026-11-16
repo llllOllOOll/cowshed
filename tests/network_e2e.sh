@@ -138,7 +138,7 @@ if cowshed deploy > "$WORK/out"; then fail "a version that cannot listen deploye
 grep -q "died and was started again" "$WORK/out" || fail "wrong reason: $(tail -5 "$WORK/out")"
 grep -qi "address in use" "$WORK/out" || fail "its logs did not say why: $(tail -5 "$WORK/out")"
 [ "$(ask)" = two ] || fail "the old version stopped serving: $(ask)"
-echo yes > "$APP/reuse.txt"
+git -C "$APP" reset -q --hard HEAD~1
 
 echo "== that container made again: seen by check --remote, mended by a deploy"
 cowshed check --remote > "$WORK/out" || fail "check failed before: $(cat "$WORK/out")"
@@ -148,9 +148,10 @@ vpn
 [ -z "$(ask)" ] || fail "reached through a vpn made again, unexpectedly"
 cowshed check --remote > "$WORK/out" || true
 grep -q "is on the network of a \`vpn\` made again since" "$WORK/out" || fail "check did not see it: $(cat "$WORK/out")"
-commit four
+# Nothing changed in the app: what runs is out of reach all the same.
 cowshed deploy > "$WORK/out" || { cat "$WORK/out"; fail "the deploy failed"; }
-[ "$(ask)" = four ] || fail "not mended: $(ask)"
+grep -q "nothing changed" "$WORK/out" && fail "taken for live: $(cat "$WORK/out")"
+[ "$(ask)" = two ] || fail "not mended: $(ask)"
 cowshed check --remote > "$WORK/out" || true
 grep -q warning "$WORK/out" && fail "still warned: $(cat "$WORK/out")"
 
@@ -167,7 +168,7 @@ cowshed setup > "$WORK/out" || { cat "$WORK/out"; fail "setup failed"; }
 commit five
 if cowshed deploy > "$WORK/out"; then fail "deployed with that container off Traefik's network"; fi
 grep -q "is not on Traefik's network \`cowshed\`" "$WORK/out" || fail "wrong reason: $(cat "$WORK/out")"
-[ "$(ask)" = four ] || fail "the old version stopped serving: $(ask)"
+[ "$(ask)" = two ] || fail "the old version stopped serving: $(ask)"
 
 echo "== put there in its own config: reached by its name, from inside and through Traefik"
 inside docker network connect cowshed vpn

@@ -166,7 +166,7 @@ new version exits with the port in use, and the deploy stops with the old one se
 
 Made again (an update of its image, say), that container has a new network, and the
 live version stays on the old one, out of reach. `cowshed check --remote` says so; the
-next `cowshed deploy` puts the app on the new one.
+next `cowshed deploy` puts the app on the new one, even with nothing changed in the app.
 
 ## Accessories
 

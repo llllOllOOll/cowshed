@@ -94,7 +94,7 @@ pub fn run(arena: Allocator, io: std.Io, environ: *const std.process.Environ.Map
                 if (source.untracked.len > shown) try out.print("notice: and {d} more new ones: see `git status`\n", .{source.untracked.len - shown});
             }
         }
-        const live = core.liveFrom(arena, ssh.remote(), config.service, made_from.?) catch |err| {
+        const live = core.liveFrom(arena, ssh.remote(), config, made_from.?) catch |err| {
             try out.print("server {s}: {t}: {s}\n", .{ config.host, err, ssh.connection_error });
             return false;
         };
