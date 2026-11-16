@@ -204,12 +204,20 @@ pub fn networksOf(arena: Allocator, config: Config, traefik: ?detect.Traefik) Al
 
 /// The project's networks are its own: made here if missing, used as they are
 /// if not, and never removed. Another container's network is never made: that
-/// container must be running, or the new version would have no network to join.
-fn ensureNetworks(self: Run) Error!bool {
+/// container must be running, or the new version would have no network to join; with
+/// a route, on Traefik's network too, for Traefik reaches the app through it.
+fn ensureNetworks(self: Run, traefik: ?detect.Traefik) Error!bool {
     if (self.config().network) |network| {
         const container = Config.sharedContainer(network).?;
         if (!try isRunning(self, container)) {
             return self.stop("the app shares the network of `{s}`, which is not running: start it, then deploy", .{container});
+        }
+        if (traefik) |found| {
+            const joined = try self.ask(try docker.networksOf(self.arena, container));
+            var names = std.mem.tokenizeAny(u8, joined.stdout, " \r\n");
+            while (names.next()) |name| {
+                if (std.mem.eql(u8, name, found.network)) break;
+            } else return self.stop("`{s}`, whose network the app shares, is not on Traefik's network `{s}`, so Traefik cannot reach the app: put it there in its own config", .{ container, found.network });
         }
         try self.say("network: sharing {s}'s", .{container});
     }
@@ -247,7 +255,7 @@ fn deployLocked(self: Run, traefik: ?detect.Traefik) Error!bool {
         try self.say("staged {s}: nothing runs it. `cowshed exec --version {s} <command...>` tries it; `cowshed deploy` puts it live", .{ version, version });
         return true;
     }
-    if (!try ensureNetworks(self)) return false;
+    if (!try ensureNetworks(self, traefik)) return false;
 
     const containers = try self.ask(try docker.listAll(self.arena, config.service));
     if (!containers.ok()) return self.stop("could not list containers: {s}", .{containers.stderr});
@@ -438,26 +446,39 @@ fn isRunning(self: Run, name: []const u8) Remote.Error!bool {
 
 fn isHealthy(self: Run, name: []const u8, traefik: ?detect.Traefik) Error!bool {
     const config = self.config();
+    if (config.network) |network| {
+        // Old and new answer on one address, so a health path cannot tell them apart:
+        // the new one must stay up, then the route's address must answer at all.
+        if (!try staysUp(self, name)) return false;
+        const proxy = config.proxy orelse return true;
+        return routing.healthy(self.context(), traefik.?, Config.sharedContainer(network).?, proxy, config.deploy_timeout_s);
+    }
     const proxy = config.proxy orelse {
-        // With no route there is no path to ask: it must stay up for a while.
-        const settle = @min(config.deploy_timeout_s, 5);
-        try self.say("health: no route to ask; watching it stay up for {d} s", .{settle});
-        try self.wait(settle);
-        const state = try self.ask(try docker.runningAndRestarts(self.arena, name));
-        var words = std.mem.tokenizeAny(u8, state.stdout, " \r\n");
-        const running = words.next() orelse "";
-        const restarts = words.next() orelse "";
-        if (!state.ok() or !std.mem.eql(u8, running, "true")) return false;
-        if (std.mem.eql(u8, restarts, "0")) return true;
-        try self.say("health: {s} died and was started again ({s} restarts)", .{ name, restarts });
-        return false;
+        return staysUp(self, name);
     };
     return routing.healthy(self.context(), traefik.?, name, proxy, config.deploy_timeout_s);
 }
 
+/// With no path to ask, it must stay up for a while, never started again.
+fn staysUp(self: Run, name: []const u8) Error!bool {
+    const settle = @min(self.config().deploy_timeout_s, 5);
+    try self.say("health: no path to ask; watching it stay up for {d} s", .{settle});
+    try self.wait(settle);
+    const state = try self.ask(try docker.runningAndRestarts(self.arena, name));
+    var words = std.mem.tokenizeAny(u8, state.stdout, " \r\n");
+    const running = words.next() orelse "";
+    const restarts = words.next() orelse "";
+    if (!state.ok() or !std.mem.eql(u8, running, "true")) return false;
+    if (std.mem.eql(u8, restarts, "0")) return true;
+    try self.say("health: {s} died and was started again ({s} restarts)", .{ name, restarts });
+    return false;
+}
+
 fn switchRoute(self: Run, traefik: detect.Traefik, name: []const u8) Error!bool {
     const config = self.config();
-    return routing.switchTo(self.context(), traefik, .{ .key = config.service, .proxy = config.proxy.?, .container = name });
+    // Sharing a container's network, the app is reached by that container's name.
+    const target = if (config.network) |network| Config.sharedContainer(network).? else name;
+    return routing.switchTo(self.context(), traefik, .{ .key = config.service, .proxy = config.proxy.?, .container = target });
 }
 
 /// `ours` is a version of this app; a container named in `replaces` is another tool's.
@@ -488,7 +509,10 @@ fn retireOld(self: Run, new_name: []const u8) Error!void {
         return;
     }
 
-    if (config.proxy) |proxy| {
+    // Sharing a container's network, every version counts the same connections.
+    if (config.proxy != null and config.network != null) {
+        try self.say("drain: none, the versions share one network", .{});
+    } else if (config.proxy) |proxy| {
         // HTTP's and each raw TCP port's connections alike; only a running one has any.
         var running: std.ArrayList([]const u8) = .empty;
         for (old.items) |one| {
@@ -981,6 +1005,40 @@ test "another container's network, that container stopped: nothing starts, the o
     try h.says("the app shares the network of `castle`, which is not running");
     try testing.expect(!h.fake.ran("docker run -d"));
     try testing.expect(!h.fake.ran("docker stop"));
+}
+
+test "another container's network with a route: through that container's name, no drain" {
+    var h = harness();
+    defer h.arena.deinit();
+    try h.begin();
+    try h.on("{{$name}} {{end}} castle", 0, "wg public \n");
+    try h.on("wget -qO- http://127.0.0.1:8080", 0, "{\"url\":\"http://castle:80\"}");
+    var config = PROXIED;
+    config.network = "container:castle";
+    try testing.expect(try h.deploy(config));
+    const run_line = h.fake.calls.items[h.fake.position("docker run -d").?].line;
+    try testing.expect(std.mem.indexOf(u8, run_line, "--network container:castle") != null);
+    try testing.expectEqual(1, std.mem.count(u8, run_line, "--network"));
+    try h.says("health: no path to ask; watching it stay up");
+    try testing.expect(h.fake.ran("http://castle:80/up"));
+    try testing.expect(!h.fake.ran("http://app-web-v2:80"));
+    try h.says("switch: traffic goes to castle");
+    try h.says("drain: none, the versions share one network");
+    try testing.expect(!h.fake.ran("{{.State.Pid}}"));
+    try testing.expect(h.fake.ran("docker stop app-web-v1"));
+}
+
+test "another container's network with a route, that container off Traefik's network: nothing starts" {
+    var h = harness();
+    defer h.arena.deinit();
+    try h.begin();
+    try h.on("{{$name}} {{end}} castle", 0, "wg \n");
+    var config = PROXIED;
+    config.network = "container:castle";
+    try testing.expect(!try h.deploy(config));
+    try h.says("`castle`, whose network the app shares, is not on Traefik's network `public`");
+    try testing.expect(!h.fake.ran("docker run -d"));
+    try h.oldUntouched();
 }
 
 test "a network that cannot be made stops it before any container, the old one untouched" {

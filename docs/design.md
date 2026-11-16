@@ -199,6 +199,9 @@ other: Docker allows none beside it. It is checked running before any version st
 a new one born without it would only exit. The overlap of old and new versions is kept,
 which asks the app to share its port (`SO_REUSEPORT`); stopping the old one first would
 leave nothing serving if the new one failed.
+With a route, it points at that container's name, the one address every version
+answers on: written once, it stays through each switch, and the drain is skipped, since
+the versions share their connections.
 
 ## Accessories
 

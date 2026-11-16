@@ -57,7 +57,7 @@ volumes:                  # Optional: what must outlive a version
   - shared:/shared:ro       # Then `:ro`, `:rw`, `:z` or `:Z`, if needed
 networks:                 # Optional: the project's own, beside Traefik's
   - my-app                # Made if missing, never removed
-network: container:vpn    # Optional, in place of `proxy` and `networks`: another container's
+network: container:vpn    # Optional, in place of `networks`: another container's
 cpus: 2                   # Optional limits
 memory: 1g
 deploy_timeout: 30        # Seconds for the new version to prove healthy
@@ -144,8 +144,18 @@ refused: a container on them can join no other.
 on the server, as if it ran inside it: it listens on that container's addresses and
 reaches what listens on its `127.0.0.1`. An app behind a VPN's container, open only
 from inside the VPN, is one case. Every version, its migration and `cowshed exec` share
-it; no network is made, and there is no route, so it goes without `proxy`, `networks`
-and accessories that have no `proxy` of their own.
+it; no network is made, so it goes without `networks` and accessories that have no
+`proxy` of their own.
+
+With `proxy` too, Traefik reaches the app by that container's name: that container must
+be on Traefik's network, put there in its own config, or `deploy` stops and says so.
+Old and new versions answer on that one address, so the health path cannot tell them
+apart: the new version must stay up with no restart, and then the path must answer
+through that address. The route does not change from one version to the next, and the
+old one is stopped with no drain, since every version sees the same connections. What
+is on Traefik's network reaches everything listening in that container, not only the
+app: an app open from inside and from outside tells them apart by the address that
+connects, never by a header.
 
 That container must be running, or `deploy` stops before starting anything. It is not
 Cowshed's: nothing here starts, changes or removes it.

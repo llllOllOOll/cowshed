@@ -2,11 +2,13 @@
 # `network: container:<name>` through real SSH on a throwaway server (Docker in Docker):
 # the app in another container's network, refused while that one is down, switched
 # under traffic with the port shared, an app that cannot share it refused with the old
-# one serving, and that container made again: seen by `check --remote`, mended by a deploy.
+# one serving, that container made again: seen by `check --remote`, mended by a deploy,
+# and a route through Traefik to that container's name, switched under traffic.
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 SSH_PORT=12225
+WEB_PORT=18093
 NAME=cowshed-e2e-network
 WORK=$(mktemp -d)
 cleanup() {
@@ -30,7 +32,7 @@ export XDG_CACHE_HOME="$WORK/cache"
 export XDG_STATE_HOME="$WORK/state"
 
 docker rm -f "$NAME" >/dev/null 2>&1 || true
-docker run -d --privileged --name "$NAME" -p "127.0.0.1:$SSH_PORT:22" -e DOCKER_TLS_CERTDIR= cowshed-e2e-server >/dev/null
+docker run -d --privileged --name "$NAME" -p "127.0.0.1:$SSH_PORT:22" -p "127.0.0.1:$WEB_PORT:80" -e DOCKER_TLS_CERTDIR= cowshed-e2e-server >/dev/null
 for _ in $(seq 60); do
 	docker exec "$NAME" docker version >/dev/null 2>&1 && break
 	sleep 1
@@ -151,5 +153,44 @@ cowshed deploy > "$WORK/out" || { cat "$WORK/out"; fail "the deploy failed"; }
 [ "$(ask)" = four ] || fail "not mended: $(ask)"
 cowshed check --remote > "$WORK/out" || true
 grep -q warning "$WORK/out" && fail "still warned: $(cat "$WORK/out")"
+
+echo "== with a route: refused while that container is off Traefik's network"
+cat >> "$APP/config/deploy.yml" <<'YAML'
+proxy:
+  host: net.example
+  app_port: 8000
+  healthcheck:
+    path: /
+YAML
+git -C "$APP" commit -qam route
+cowshed setup > "$WORK/out" || { cat "$WORK/out"; fail "setup failed"; }
+commit five
+if cowshed deploy > "$WORK/out"; then fail "deployed with that container off Traefik's network"; fi
+grep -q "is not on Traefik's network \`cowshed\`" "$WORK/out" || fail "wrong reason: $(cat "$WORK/out")"
+[ "$(ask)" = four ] || fail "the old version stopped serving: $(ask)"
+
+echo "== put there in its own config: reached by its name, from inside and through Traefik"
+inside docker network connect cowshed vpn
+cowshed deploy > "$WORK/out" || { cat "$WORK/out"; fail "the deploy failed"; }
+grep -q "switch: traffic goes to vpn" "$WORK/out" || fail "the route is not to vpn: $(cat "$WORK/out")"
+reach() { curl -s -m 2 -H 'Host: net.example' "http://127.0.0.1:$WEB_PORT/" || true; }
+[ "$(reach)" = five ] || fail "not reached through Traefik: $(reach)"
+[ "$(ask)" = five ] || fail "not reached from inside: $(ask)"
+
+echo "== a version under traffic through Traefik: every request answered"
+commit six
+( while [ ! -e "$WORK/stop" ]; do reach; echo; sleep 0.05; done > "$WORK/routed" ) &
+loop=$!
+cowshed deploy > "$WORK/out" || { cat "$WORK/out"; fail "the deploy failed"; }
+grep -q "drain: none, the versions share one network" "$WORK/out" || fail "it drained: $(cat "$WORK/out")"
+sleep 1
+touch "$WORK/stop"
+wait "$loop"
+grep -q '^five$' "$WORK/routed" || fail "the old version was never asked"
+grep -q '^six$' "$WORK/routed" || fail "the new version was never asked"
+bad=$(grep -cvE '^(five|six)$' "$WORK/routed" || true)
+echo "   $(grep -c . "$WORK/routed") answers, $bad failed"
+[ "$bad" = 0 ] || fail "requests failed during the switch: $(grep -vE '^(five|six)$' "$WORK/routed" | sort | uniq -c)"
+[ "$(reach)" = six ] || fail "the new version is not routed: $(reach)"
 
 echo "e2e passed"

@@ -33,6 +33,11 @@ pub fn remove(arena: Allocator, name: []const u8) Allocator.Error![]const []cons
     return arena.dupe([]const u8, &.{ "docker", "rm", "-f", name });
 }
 
+/// The networks a container is on, by name, on one line.
+pub fn networksOf(arena: Allocator, container: []const u8) Allocator.Error![]const []const u8 {
+    return arena.dupe([]const u8, &.{ "docker", "inspect", "--format", "{{range $name, $_ := .NetworkSettings.Networks}}{{$name}} {{end}}", container });
+}
+
 pub fn networkExists(arena: Allocator, name: []const u8) Allocator.Error![]const []const u8 {
     return arena.dupe([]const u8, &.{ "docker", "network", "inspect", "--format", "{{.Name}}", name });
 }

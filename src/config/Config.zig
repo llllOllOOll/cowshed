@@ -462,8 +462,6 @@ const Reader = struct {
             const line = root.get("network").?.line;
             if (sharedContainer(network) == null) {
                 try self.problem(line, "`network` is `container:<name>`, a container's name being letters, digits, `_`, `.` and `-`: `{s}`", .{network});
-            } else if (config.proxy != null) {
-                try self.problem(line, "`network` and `proxy` cannot go together: Traefik reaches an app on its own network, and this one is on another container's", .{});
             } else if (config.networks.len > 0) {
                 try self.problem(line, "`network` and `networks` cannot go together: an app on another container's network joins no other", .{});
             }
@@ -818,7 +816,8 @@ test "another container's network" {
         try testing.expectError(error.InvalidConfig, parse(arena.allocator(), source, &problems));
         try testing.expect(std.mem.indexOf(u8, problems.items[0].message, "`network` is `container:<name>`") != null);
     }
-    try expectProblem(MINIMAL ++ "network: container:castle\nproxy:\n  host: a.example\n", "`network` and `proxy` cannot go together: Traefik reaches an app on its own network, and this one is on another container's");
+    problems = .empty;
+    _ = try parse(arena.allocator(), MINIMAL ++ "network: container:castle\nproxy:\n  host: a.example\n", &problems);
     try expectProblem(MINIMAL ++ "network: container:castle\nnetworks:\n  - own\n", "`network` and `networks` cannot go together: an app on another container's network joins no other");
     try expectProblem(MINIMAL ++ "network: container:castle\naccessories:\n  db:\n    image: postgres\n    networks:\n      - own\n", "`accessories.db`: the app is on another container's network, where it cannot reach an accessory by name; only one with a `proxy`, by its route");
 }
