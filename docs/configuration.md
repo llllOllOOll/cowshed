@@ -57,6 +57,7 @@ volumes:                  # Optional: what must outlive a version
   - shared:/shared:ro       # Then `:ro`, `:rw`, `:z` or `:Z`, if needed
 networks:                 # Optional: the project's own, beside Traefik's
   - my-app                # Made if missing, never removed
+network: container:vpn    # Optional, in place of `proxy` and `networks`: another container's
 cpus: 2                   # Optional limits
 memory: 1g
 deploy_timeout: 30        # Seconds for the new version to prove healthy
@@ -136,6 +137,26 @@ never runs without its database. A network missing is made by `deploy`; one that
 used as it is, whoever made it. `remove` leaves them: something else may be on one. Docker
 25 or later joins several networks at once. `host`, `none` and `bridge` are Docker's own and
 refused: a container on them can join no other.
+
+## Another container's network
+
+`network: container:<name>` puts the app in the network of a container that is already
+on the server, as if it ran inside it: it listens on that container's addresses and
+reaches what listens on its `127.0.0.1`. An app behind a VPN's container, open only
+from inside the VPN, is one case. Every version, its migration and `cowshed exec` share
+it; no network is made, and there is no route, so it goes without `proxy`, `networks`
+and accessories that have no `proxy` of their own.
+
+That container must be running, or `deploy` stops before starting anything. It is not
+Cowshed's: nothing here starts, changes or removes it.
+
+The new version starts beside the old one, as always, so both listen on the same port
+for a moment. The app must listen with `SO_REUSEPORT` to share it; if it does not, the
+new version exits with the port in use, and the deploy stops with the old one serving.
+
+Made again (an update of its image, say), that container has a new network, and the
+live version stays on the old one, out of reach. `cowshed check --remote` says so; the
+next `cowshed deploy` puts the app on the new one.
 
 ## Accessories
 

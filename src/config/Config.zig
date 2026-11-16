@@ -117,6 +117,10 @@ volumes: []const []const u8 = &.{},
 /// Networks of the project's own, beside Traefik's: what only the app should
 /// reach, such as its database. Made if missing, never removed.
 networks: []const []const u8 = &.{},
+/// `container:<name>`: the app shares that container's network, as if it ran inside
+/// it, in place of Traefik's and the project's. No route, then: what reaches the
+/// app is what reaches that container.
+network: ?[]const u8 = null,
 cpus: ?[]const u8 = null,
 memory: ?[]const u8 = null,
 env: Env = .{},
@@ -399,6 +403,7 @@ const Reader = struct {
             "proxy",          "ssh",           "boot",     "cpus",     "memory",  "accessories",
             "deploy_timeout", "drain_timeout", "replaces", "secrets",  "branch",  "secrets",
             "sources",        "volumes",       "env_file", "migrate",  "backup",  "networks",
+            "network",
         });
 
         var config: Config = .{
@@ -414,6 +419,7 @@ const Reader = struct {
             .sources = try self.strings(root, "sources", ""),
             .volumes = try self.strings(root, "volumes", ""),
             .networks = try self.strings(root, "networks", ""),
+            .network = try self.string(root, "network", ""),
             .env = try self.readEnv(root, ""),
             .proxy = try self.readProxy(root, ""),
             .backup = try self.readBackup(root),
@@ -452,6 +458,17 @@ const Reader = struct {
             }
         }
 
+        if (config.network) |network| {
+            const line = root.get("network").?.line;
+            if (sharedContainer(network) == null) {
+                try self.problem(line, "`network` is `container:<name>`, a container's name being letters, digits, `_`, `.` and `-`: `{s}`", .{network});
+            } else if (config.proxy != null) {
+                try self.problem(line, "`network` and `proxy` cannot go together: Traefik reaches an app on its own network, and this one is on another container's", .{});
+            } else if (config.networks.len > 0) {
+                try self.problem(line, "`network` and `networks` cannot go together: an app on another container's network joins no other", .{});
+            }
+        }
+
         if (root.get("ssh")) |ssh| {
             try self.checkKeys(ssh.value, ssh.line, "ssh", &.{ "user", "port", "keys" });
             config.ssh = .{
@@ -477,7 +494,9 @@ const Reader = struct {
                     try self.checkAccessory(entry, accessory, config.host);
                     // With no route and no network, it lands on Docker's `bridge`,
                     // where the app cannot reach it by name.
-                    if (accessory.proxy == null and (accessory.networks orelse config.networks).len == 0) {
+                    if (accessory.proxy == null and config.network != null) {
+                        try self.problem(entry.line, "`accessories.{s}`: the app is on another container's network, where it cannot reach an accessory by name; only one with a `proxy`, by its route", .{accessory.name});
+                    } else if (accessory.proxy == null and (accessory.networks orelse config.networks).len == 0) {
                         try self.problem(entry.line, "`accessories.{s}` shares no network with the app, so the app cannot reach it by name: list one under `networks`, the project's, and it joins it", .{accessory.name});
                     }
                     try out.append(self.arena, accessory);
@@ -635,6 +654,14 @@ fn isDirectory(text: []const u8) bool {
         inside.len > 1 and inside[0] == '/' and std.mem.indexOfScalar(u8, inside, ':') == null;
 }
 
+/// The container named by `network: container:<name>`, or null when it is not that.
+pub fn sharedContainer(network: []const u8) ?[]const u8 {
+    const prefix = "container:";
+    if (!std.mem.startsWith(u8, network, prefix)) return null;
+    const name = network[prefix.len..];
+    return if (isNetworkName(name)) name else null;
+}
+
 /// A container on one of these cannot join another network as well.
 fn isDockerOwnNetwork(name: []const u8) bool {
     for ([_][]const u8{ "host", "none", "bridge" }) |own| {
@@ -776,6 +803,24 @@ test "volumes" {
         try testing.expect(std.mem.indexOf(u8, problems.items[0].message, "a volume is") != null);
     }
     try expectProblem(MINIMAL ++ "volumes: /a:/b\n", "`.volumes` must be a list");
+}
+
+test "another container's network" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var problems: std.ArrayList(Problem) = .empty;
+    const config = try parse(arena.allocator(), MINIMAL ++ "network: container:castle\n", &problems);
+    try testing.expectEqualStrings("container:castle", config.network.?);
+    try testing.expectEqualStrings("castle", sharedContainer(config.network.?).?);
+    for ([_][]const u8{ "castle", "container:", "container:-x", "container:a b", "host" }) |bad| {
+        const source = try std.fmt.allocPrint(arena.allocator(), MINIMAL ++ "network: \"{s}\"\n", .{bad});
+        problems = .empty;
+        try testing.expectError(error.InvalidConfig, parse(arena.allocator(), source, &problems));
+        try testing.expect(std.mem.indexOf(u8, problems.items[0].message, "`network` is `container:<name>`") != null);
+    }
+    try expectProblem(MINIMAL ++ "network: container:castle\nproxy:\n  host: a.example\n", "`network` and `proxy` cannot go together: Traefik reaches an app on its own network, and this one is on another container's");
+    try expectProblem(MINIMAL ++ "network: container:castle\nnetworks:\n  - own\n", "`network` and `networks` cannot go together: an app on another container's network joins no other");
+    try expectProblem(MINIMAL ++ "network: container:castle\naccessories:\n  db:\n    image: postgres\n    networks:\n      - own\n", "`accessories.db`: the app is on another container's network, where it cannot reach an accessory by name; only one with a `proxy`, by its route");
 }
 
 test "networks of the project's own" {

@@ -91,6 +91,9 @@ how far along it is every 5 s.
    configured path: every 1 s, 5 s per probe, 2xx only, within `deploy_timeout`
    (default 30 s). On failure: show its logs, stop it. The old one keeps serving,
    untouched.
+   With no `proxy` there is no path to ask: it must still run a few seconds later
+   with no restart, since `--restart unless-stopped` shows one that dies at once as
+   running, between two deaths.
 8. Refuse if another file in Traefik's folder names our router (an earlier one would
    win), then switch: write the app's file to a temporary name without a `.yml`
    extension and rename it into place.
@@ -190,6 +193,12 @@ The app joins Traefik's network, then the project's own (`networks`), all in its
 run`: joining one later would let it start without its database. Traefik's network is
 shared by every app on the server, so a database belongs on a network of the project's,
 where only what needs it sees it. A missing one is made; none is removed.
+
+With `network: container:<name>` the app joins that container's network instead, and no
+other: Docker allows none beside it. It is checked running before any version starts, as
+a new one born without it would only exit. The overlap of old and new versions is kept,
+which asks the app to share its port (`SO_REUSEPORT`); stopping the old one first would
+leave nothing serving if the new one failed.
 
 ## Accessories
 

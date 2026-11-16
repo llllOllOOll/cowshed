@@ -115,6 +115,10 @@ fn checkRemote(arena: Allocator, io: std.Io, out: *std.Io.Writer, config: Config
         try out.print("server: {t}: {s}\n", .{ err, ssh.connection_error });
         return false;
     };
+    _ = core.checkShared(arena, remote, out, config) catch |err| {
+        try out.print("server: {t}: {s}\n", .{ err, ssh.connection_error });
+        return false;
+    };
     return true;
 }
 

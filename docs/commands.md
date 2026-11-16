@@ -15,7 +15,8 @@ Cowshed's: `config/deploy.yml`, `.cowshed/secrets`, and the secrets kept out of 
 **`cowshed check [--secrets <path>] [--remote]`** reads the config and the secrets'
 names, without running any secret's command. `--remote` also reaches the server and
 Docker, and warns of a version that is not live but restarting: Docker starts it again
-each time it exits, so its code keeps running. Changes nothing.
+each time it exits, so its code keeps running. With `network`, it also warns when that
+container is not there, or was made again after the live version joined it. Changes nothing.
 
 `setup`, `proxy adopt`, `deploy` and `rollback` keep a copy of what they say on this machine, in
 `~/.local/state/cowshed/logs/`, and name the file at the end. A build's own output stays on the

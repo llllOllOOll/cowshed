@@ -102,6 +102,29 @@ pub fn checkStuck(arena: Allocator, remote: Remote, out: *Writer, config: Config
     return none;
 }
 
+/// For `check --remote`, with `network`: warns when the container whose network the
+/// app shares is not there, or was made again after the live version joined it: that
+/// version is left on a network no longer the container's, and the next deploy puts
+/// it on the new one. True when neither.
+pub fn checkShared(arena: Allocator, remote: Remote, out: *Writer, config: Config) Error!bool {
+    const network = config.network orelse return true;
+    const container = Config.sharedContainer(network).?;
+    const target = try remote.run(arena, .{ .argv = &.{ "docker", "inspect", "--format", "{{.Id}}", container } });
+    if (!target.ok()) {
+        try out.print("warning: `{s}`, whose network the app shares, is not there: no version can start until it is\n", .{container});
+        return false;
+    }
+    const listing = try remote.run(arena, .{ .argv = try docker.listAll(arena, config.service) });
+    if (!listing.ok()) return true;
+    const live = liveOf(try parseRows(arena, listing.stdout)) orelse return true;
+    const mode = try remote.run(arena, .{ .argv = &.{ "docker", "inspect", "--format", "{{.HostConfig.NetworkMode}}", live.name } });
+    if (!mode.ok()) return true;
+    const wanted = try std.fmt.allocPrint(arena, "container:{s}", .{trimmed(target.stdout)});
+    if (std.mem.eql(u8, trimmed(mode.stdout), wanted)) return true;
+    try out.print("warning: {s} is on the network of a `{s}` made again since: what reaches `{s}` does not reach it. `cowshed deploy` puts it on the new one\n", .{ live.name, container, container });
+    return false;
+}
+
 pub fn logs(arena: Allocator, remote: Remote, out: *Writer, config: Config, lines: []const u8) Error!bool {
     const rows = try list(arena, remote, out, config) orelse return false;
     const live = liveOf(rows) orelse {
@@ -374,6 +397,39 @@ test "exec: the live version, its env file, its words whole, its exit code" {
     try testing.expect(!try exec(a, h.fake.remote(), &h.output.writer, config, "v1", &.{}, &.{"x"}));
     try testing.expect(h.fake.ran("app:v1 x"));
     try h.says("exit code 3");
+}
+
+test "exec joins another container's network alone" {
+    var h = harness();
+    defer h.arena.deinit();
+    try h.begin();
+    var config = CONFIG;
+    config.network = "container:castle";
+    try testing.expect(try exec(h.arena.allocator(), h.fake.remote(), &h.output.writer, config, null, &.{}, &.{"x"}));
+    const line = h.fake.calls.items[h.fake.position("docker run --rm").?].line;
+    try testing.expect(std.mem.indexOf(u8, line, "--network container:castle") != null);
+    try testing.expectEqual(1, std.mem.count(u8, line, "--network"));
+}
+
+test "check of another container's network: there and joined, made again, or gone" {
+    var h = harness();
+    defer h.arena.deinit();
+    try h.begin();
+    const a = h.arena.allocator();
+    var config = CONFIG;
+    try testing.expect(try checkShared(a, h.fake.remote(), &h.output.writer, config));
+    config.network = "container:castle";
+    try h.on("docker inspect --format {{.Id}} castle", 0, "abc123\n");
+    try h.on("{{.HostConfig.NetworkMode}}", 0, "container:abc123\n");
+    try testing.expect(try checkShared(a, h.fake.remote(), &h.output.writer, config));
+
+    try h.on("{{.HostConfig.NetworkMode}}", 0, "container:old999\n");
+    try testing.expect(!try checkShared(a, h.fake.remote(), &h.output.writer, config));
+    try h.says("app-web-v2 is on the network of a `castle` made again since");
+
+    try h.on("docker inspect --format {{.Id}} castle", 1, "");
+    try testing.expect(!try checkShared(a, h.fake.remote(), &h.output.writer, config));
+    try h.says("`castle`, whose network the app shares, is not there");
 }
 
 test "exec joins the project's networks too" {

@@ -19,6 +19,7 @@ tests/monorepo_e2e.sh # a project in a monorepo, from clean copies
 tests/proxy_e2e.sh   # adopting a Traefik another app's Compose owns, under traffic
 tests/accessory_e2e.sh # accessories: secrets, files, directories, their life
 tests/tcp_e2e.sh     # raw TCP through our Traefik: switched, drained, refused
+tests/network_e2e.sh # an app in another container's network: shared port, refused, mended
 ```
 
 **Releasing:** set `.version` in `build.zig.zon`, commit, then tag `vX.Y.Z` on that

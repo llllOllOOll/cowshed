@@ -188,8 +188,10 @@ pub fn run(arena: Allocator, remote: Remote, out: *Writer, input: Input) Error!b
     return done;
 }
 
-/// Traefik's network first, then the project's own, each once.
+/// Traefik's network first, then the project's own, each once; or, with `network`,
+/// that container's alone.
 pub fn networksOf(arena: Allocator, config: Config, traefik: ?detect.Traefik) Allocator.Error![]const []const u8 {
+    if (config.network) |network| return arena.dupe([]const u8, &.{network});
     var networks: std.ArrayList([]const u8) = .empty;
     if (traefik) |found| try networks.append(arena, found.network);
     for (config.networks) |network| {
@@ -201,8 +203,16 @@ pub fn networksOf(arena: Allocator, config: Config, traefik: ?detect.Traefik) Al
 }
 
 /// The project's networks are its own: made here if missing, used as they are
-/// if not, and never removed.
+/// if not, and never removed. Another container's network is never made: that
+/// container must be running, or the new version would have no network to join.
 fn ensureNetworks(self: Run) Error!bool {
+    if (self.config().network) |network| {
+        const container = Config.sharedContainer(network).?;
+        if (!try isRunning(self, container)) {
+            return self.stop("the app shares the network of `{s}`, which is not running: start it, then deploy", .{container});
+        }
+        try self.say("network: sharing {s}'s", .{container});
+    }
     for (self.config().networks) |network| {
         if ((try self.ask(try docker.networkExists(self.arena, network))).ok()) continue;
         try self.say("network: making {s}", .{network});
@@ -433,7 +443,14 @@ fn isHealthy(self: Run, name: []const u8, traefik: ?detect.Traefik) Error!bool {
         const settle = @min(config.deploy_timeout_s, 5);
         try self.say("health: no route to ask; watching it stay up for {d} s", .{settle});
         try self.wait(settle);
-        return isRunning(self, name);
+        const state = try self.ask(try docker.runningAndRestarts(self.arena, name));
+        var words = std.mem.tokenizeAny(u8, state.stdout, " \r\n");
+        const running = words.next() orelse "";
+        const restarts = words.next() orelse "";
+        if (!state.ok() or !std.mem.eql(u8, running, "true")) return false;
+        if (std.mem.eql(u8, restarts, "0")) return true;
+        try self.say("health: {s} died and was started again ({s} restarts)", .{ name, restarts });
+        return false;
     };
     return routing.healthy(self.context(), traefik.?, name, proxy, config.deploy_timeout_s);
 }
@@ -763,6 +780,7 @@ const Harness = struct {
         try self.on("docker inspect --format {{json", 0, INSPECT);
         try self.on("docker ps -a", 0, "app-web-v1\trunning\tv1\n");
         try self.on("docker inspect --format {{.State.Running}}", 0, "true\n");
+        try self.on("{{.State.Running}} {{.RestartCount}}", 0, "true 0\n");
         try self.on("docker inspect --format {{.State.Pid}}", 0, "42\n");
         try self.on("wget -qO- http://127.0.0.1:8080", 0, NEW_ROUTE_SHOWN);
         // No route yet, unless a test says so.
@@ -932,6 +950,37 @@ test "the project's networks: made if missing, used if there, the new version an
         try testing.expect(std.mem.indexOf(u8, line, "--network public --network own --network theirs") != null);
         try testing.expectEqual(1, std.mem.count(u8, line, "--network public"));
     }
+}
+
+test "another container's network: joined alone, never made, and it must be running" {
+    var h = harness();
+    defer h.arena.deinit();
+    try h.begin();
+    try h.on("umask 077", 0, "/home/u/.cowshed/env/app-web-v2");
+    try h.on("sh 60 app-web-v2-migrate docker run", 0, "");
+    var config: Config = .{ .service = "", .image = "", .host = "", .network = "container:castle" };
+    config.migrate = .{ .command = "./app", .timeout_s = 60 };
+    h.migrating = true;
+    try testing.expect(try h.deploy(config));
+    try testing.expect(!h.fake.ran("docker network"));
+    try h.before("docker inspect --format {{.State.Running}} castle", "sh 60 app-web-v2-migrate docker run");
+    for ([_][]const u8{ "sh 60 app-web-v2-migrate docker run", "docker run -d" }) |container| {
+        const line = h.fake.calls.items[h.fake.position(container).?].line;
+        try testing.expect(std.mem.indexOf(u8, line, "--network container:castle") != null);
+        try testing.expectEqual(1, std.mem.count(u8, line, "--network"));
+    }
+    try testing.expect(h.fake.ran("docker stop app-web-v1"));
+}
+
+test "another container's network, that container stopped: nothing starts, the old one untouched" {
+    var h = harness();
+    defer h.arena.deinit();
+    try h.begin();
+    try h.on("docker inspect --format {{.State.Running}} castle", 0, "false\n");
+    try testing.expect(!try h.deploy(.{ .service = "", .image = "", .host = "", .network = "container:castle" }));
+    try h.says("the app shares the network of `castle`, which is not running");
+    try testing.expect(!h.fake.ran("docker run -d"));
+    try testing.expect(!h.fake.ran("docker stop"));
 }
 
 test "a network that cannot be made stops it before any container, the old one untouched" {
@@ -1468,6 +1517,16 @@ test "with no proxy: no route and no drain, and it must stay up" {
     try testing.expect(!h.fake.ran("docker exec"));
     try testing.expect(!h.fake.ran("--network"));
     try testing.expect(h.fake.ran("docker stop app-web-v1"));
+}
+
+test "with no proxy, one that dies and is started again is not healthy: the old one untouched" {
+    var h = harness();
+    defer h.arena.deinit();
+    try h.begin();
+    try h.on("{{.State.Running}} {{.RestartCount}} app-web-v2", 0, "true 2\n");
+    try testing.expect(!try h.deploy(.{ .service = "", .image = "", .host = "" }));
+    try h.says("health: app-web-v2 died and was started again (2 restarts)");
+    try testing.expect(!h.fake.ran("docker stop app-web-v1"));
 }
 
 test "the audit log records the start and the end, with who" {

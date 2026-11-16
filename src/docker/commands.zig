@@ -248,6 +248,12 @@ pub fn restartUnlessStopped(arena: Allocator, name: []const u8) Allocator.Error!
     return arena.dupe([]const u8, &.{ "docker", "update", "--restart", "unless-stopped", name });
 }
 
+/// Running or not, then how many times Docker started it again: one that dies at once
+/// shows as running between two deaths, under `--restart unless-stopped`.
+pub fn runningAndRestarts(arena: Allocator, name: []const u8) Allocator.Error![]const []const u8 {
+    return arena.dupe([]const u8, &.{ "docker", "inspect", "--format", "{{.State.Running}} {{.RestartCount}}", name });
+}
+
 pub fn restartCount(arena: Allocator, name: []const u8) Allocator.Error![]const []const u8 {
     return arena.dupe([]const u8, &.{ "docker", "inspect", "--format", "{{.RestartCount}}", name });
 }
