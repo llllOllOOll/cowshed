@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/cowshed-logo.png" alt="Cowshed — Deploy your apps" width="480">
+</p>
+
 # Cowshed
 
 Cowshed deploys Docker containers to a server over SSH, as one Zig binary. The
